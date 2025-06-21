@@ -1,3 +1,9 @@
+-- Drop existing functions first to avoid return type conflicts
+DROP FUNCTION IF EXISTS insert_skaters_from_staging() CASCADE;
+DROP FUNCTION IF EXISTS get_occurrence_stats() CASCADE;
+DROP FUNCTION IF EXISTS generate_skater_data_hash(BIGINT, BIGINT, BIGINT, BIGINT, DOUBLE PRECISION, BIGINT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) CASCADE;
+DROP PROCEDURE IF EXISTS sync_skaters_from_staging() CASCADE;
+
 DROP TABLE IF EXISTS newapi.skaters CASCADE;
 -- Create the production skaters table with occurrence tracking
 CREATE TABLE newapi.skaters (
@@ -21,37 +27,25 @@ CREATE TABLE newapi.skaters (
     "avgTimeOnIcePerGame" DOUBLE PRECISION,
     "avgShiftsPerGame" DOUBLE PRECISION,
     "faceoffWinPctg" DOUBLE PRECISION,
-    "firstName.default" TEXT,
-    "lastName.default" TEXT,
-    "firstName.cs" TEXT,
-    "firstName.sk" TEXT,
-    "lastName.cs" TEXT,
-    "lastName.sk" TEXT,
-    "firstName.de" TEXT,
-    "firstName.es" TEXT,
-    "firstName.fi" TEXT,
-    "firstName.sv" TEXT,
-    "lastName.de" TEXT,
-    "lastName.fi" TEXT,
-    "lastName.sv" TEXT,
-    "lastName.es" TEXT,
+    "firstName" TEXT,  -- Simplified from localized fields
+    "lastName" TEXT,   -- Simplified from localized fields
     season BIGINT,
     "gameType" BIGINT,
-    abbreviation TEXT,
+    "triCode" TEXT,    -- Changed from abbreviation to match staging
     occurrence_number INTEGER DEFAULT 1,  -- 1st, 2nd, 3rd time with same team in season
     data_hash TEXT,                       -- Hash of key data fields to detect actual changes
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
     -- Unique constraint to prevent exact duplicates
-    UNIQUE("playerId", season, "gameType", abbreviation, occurrence_number)
+    UNIQUE("playerId", season, "gameType", "triCode", occurrence_number)
 );
 
 -- Create indexes for better performance
 CREATE INDEX idx_skaters_player_id ON newapi.skaters("playerId");
 CREATE INDEX idx_skaters_season ON newapi.skaters(season);
-CREATE INDEX idx_skaters_team ON newapi.skaters(abbreviation);
-CREATE INDEX idx_skaters_occurrence ON newapi.skaters("playerId", season, "gameType", abbreviation, occurrence_number);
+CREATE INDEX idx_skaters_team ON newapi.skaters("triCode");
+CREATE INDEX idx_skaters_occurrence ON newapi.skaters("playerId", season, "gameType", "triCode", occurrence_number);
 
 -- Function to generate a hash of the important data fields
 CREATE OR REPLACE FUNCTION generate_skater_data_hash(
@@ -116,15 +110,11 @@ BEGIN
     -- Loop through each record in staging
     FOR rec IN 
         SELECT 
-            "playerId", headshot, "positionCode", "gamesPlayed", 
-            goals, assists, points, "plusMinus", "penaltyMinutes", 
+            "playerId", headshot, "firstName", "lastName", "positionCode", 
+            "gamesPlayed", goals, assists, points, "plusMinus", "penaltyMinutes", 
             "powerPlayGoals", "shorthandedGoals", "gameWinningGoals", 
             "overtimeGoals", shots, "shootingPctg", "avgTimeOnIcePerGame", 
-            "avgShiftsPerGame", "faceoffWinPctg", "firstName.default", 
-            "lastName.default", "firstName.cs", "firstName.sk", 
-            "lastName.cs", "lastName.sk", "firstName.de", "firstName.es", 
-            "firstName.fi", "firstName.sv", "lastName.de", "lastName.fi", 
-            "lastName.sv", "lastName.es", season, "gameType", abbreviation
+            "avgShiftsPerGame", "faceoffWinPctg", season, "gameType", "triCode"
         FROM staging1.skaters
     LOOP
         -- Generate hash for the new data
@@ -143,7 +133,7 @@ BEGIN
             WHERE "playerId" = rec."playerId" 
             AND season = rec.season 
             AND "gameType" = rec."gameType" 
-            AND abbreviation = rec.abbreviation
+            AND "triCode" = rec."triCode"
             ORDER BY occurrence_number
         LOOP
             -- Check if this record has the same data (hash match)
@@ -167,32 +157,23 @@ BEGIN
             WHERE "playerId" = rec."playerId" 
             AND season = rec.season 
             AND "gameType" = rec."gameType" 
-            AND abbreviation = rec.abbreviation;
+            AND "triCode" = rec."triCode";
             
             -- Insert new record with the next occurrence number
             INSERT INTO newapi.skaters (
-                "playerId", headshot, "positionCode", "gamesPlayed", 
-                goals, assists, points, "plusMinus", "penaltyMinutes", 
+                "playerId", headshot, "firstName", "lastName", "positionCode", 
+                "gamesPlayed", goals, assists, points, "plusMinus", "penaltyMinutes", 
                 "powerPlayGoals", "shorthandedGoals", "gameWinningGoals", 
                 "overtimeGoals", shots, "shootingPctg", "avgTimeOnIcePerGame", 
-                "avgShiftsPerGame", "faceoffWinPctg", "firstName.default", 
-                "lastName.default", "firstName.cs", "firstName.sk", 
-                "lastName.cs", "lastName.sk", "firstName.de", "firstName.es", 
-                "firstName.fi", "firstName.sv", "lastName.de", "lastName.fi", 
-                "lastName.sv", "lastName.es", season, "gameType", abbreviation,
+                "avgShiftsPerGame", "faceoffWinPctg", season, "gameType", "triCode",
                 occurrence_number, data_hash
             ) VALUES (
-                rec."playerId", rec.headshot, rec."positionCode", rec."gamesPlayed",
-                rec.goals, rec.assists, rec.points, rec."plusMinus", rec."penaltyMinutes",
-                rec."powerPlayGoals", rec."shorthandedGoals", rec."gameWinningGoals",
-                rec."overtimeGoals", rec.shots, rec."shootingPctg", rec."avgTimeOnIcePerGame",
-                rec."avgShiftsPerGame", rec."faceoffWinPctg", rec."firstName.default",
-                rec."lastName.default", rec."firstName.cs", rec."firstName.sk",
-                rec."lastName.cs", rec."lastName.sk", rec."firstName.de", rec."firstName.es",
-                rec."firstName.fi", rec."firstName.sv", rec."lastName.de", rec."lastName.fi",
-                rec."lastName.sv", rec."lastName.es", rec.season, rec."gameType", rec.abbreviation,
-                next_occurrence,
-                new_hash
+                rec."playerId", rec.headshot, rec."firstName", rec."lastName", rec."positionCode",
+                rec."gamesPlayed", rec.goals, rec.assists, rec.points, rec."plusMinus", 
+                rec."penaltyMinutes", rec."powerPlayGoals", rec."shorthandedGoals", 
+                rec."gameWinningGoals", rec."overtimeGoals", rec.shots, rec."shootingPctg", 
+                rec."avgTimeOnIcePerGame", rec."avgShiftsPerGame", rec."faceoffWinPctg", 
+                rec.season, rec."gameType", rec."triCode", next_occurrence, new_hash
             );
             
             IF next_occurrence = 1 THEN
@@ -229,22 +210,24 @@ $$;
 CREATE OR REPLACE VIEW newapi.skaters_current AS
 SELECT s.* FROM newapi.skaters s
 INNER JOIN (
-    SELECT "playerId", season, "gameType", abbreviation, MAX(occurrence_number) as max_occurrence
+    SELECT "playerId", season, "gameType", "triCode", MAX(occurrence_number) as max_occurrence
     FROM newapi.skaters
-    GROUP BY "playerId", season, "gameType", abbreviation
+    GROUP BY "playerId", season, "gameType", "triCode"
 ) latest ON s."playerId" = latest."playerId" 
     AND s.season = latest.season 
     AND s."gameType" = latest."gameType" 
-    AND s.abbreviation = latest.abbreviation
+    AND s."triCode" = latest."triCode"
     AND s.occurrence_number = latest.max_occurrence;
 
 -- View to show players with multiple stints on same team
 CREATE OR REPLACE VIEW newapi.skaters_multiple_stints AS
 SELECT 
     s."playerId",
+    s."firstName",
+    s."lastName",
     s.season,
     s."gameType",
-    s.abbreviation,
+    s."triCode",
     s.occurrence_number,
     s.created_at,
     s.updated_at,
@@ -253,23 +236,25 @@ SELECT
     s.points,
     s."gamesPlayed",
     -- Show progression between occurrences
-    LAG(s.goals) OVER (PARTITION BY s."playerId", s.season, s."gameType", s.abbreviation ORDER BY s.occurrence_number) as prev_goals,
-    LAG(s.assists) OVER (PARTITION BY s."playerId", s.season, s."gameType", s.abbreviation ORDER BY s.occurrence_number) as prev_assists,
-    LAG(s.points) OVER (PARTITION BY s."playerId", s.season, s."gameType", s.abbreviation ORDER BY s.occurrence_number) as prev_points,
-    LAG(s."gamesPlayed") OVER (PARTITION BY s."playerId", s.season, s."gameType", s.abbreviation ORDER BY s.occurrence_number) as prev_games
+    LAG(s.goals) OVER (PARTITION BY s."playerId", s.season, s."gameType", s."triCode" ORDER BY s.occurrence_number) as prev_goals,
+    LAG(s.assists) OVER (PARTITION BY s."playerId", s.season, s."gameType", s."triCode" ORDER BY s.occurrence_number) as prev_assists,
+    LAG(s.points) OVER (PARTITION BY s."playerId", s.season, s."gameType", s."triCode" ORDER BY s.occurrence_number) as prev_points,
+    LAG(s."gamesPlayed") OVER (PARTITION BY s."playerId", s.season, s."gameType", s."triCode" ORDER BY s.occurrence_number) as prev_games
 FROM newapi.skaters s
 WHERE s."playerId" IN (
     SELECT "playerId" 
     FROM newapi.skaters 
-    GROUP BY "playerId", season, "gameType", abbreviation 
+    GROUP BY "playerId", season, "gameType", "triCode" 
     HAVING COUNT(*) > 1
 )
-ORDER BY s."playerId", s.season, s."gameType", s.abbreviation, s.occurrence_number;
+ORDER BY s."playerId", s.season, s."gameType", s."triCode", s.occurrence_number;
 
 -- Function to show statistics about multiple occurrences
 CREATE OR REPLACE FUNCTION get_occurrence_stats()
 RETURNS TABLE(
     player_id BIGINT,
+    first_name TEXT,
+    last_name TEXT,
     season_val BIGINT,
     game_type BIGINT,
     team TEXT,
@@ -281,16 +266,18 @@ BEGIN
     RETURN QUERY
     SELECT 
         s."playerId",
+        s."firstName",
+        s."lastName",
         s.season,
         s."gameType",
-        s.abbreviation,
+        s."triCode",
         COUNT(*)::INTEGER as total_occurrences,
         (MIN(s.created_at)::DATE || ' to ' || MAX(s.updated_at)::DATE) as date_range,
         'Games: ' || MIN(s."gamesPlayed") || '->' || MAX(s."gamesPlayed") || 
         ', Goals: ' || MIN(s.goals) || '->' || MAX(s.goals) || 
         ', Points: ' || MIN(s.points) || '->' || MAX(s.points) as stat_progression
     FROM newapi.skaters s
-    GROUP BY s."playerId", s.season, s."gameType", s.abbreviation
+    GROUP BY s."playerId", s."firstName", s."lastName", s.season, s."gameType", s."triCode"
     HAVING COUNT(*) > 1
     ORDER BY COUNT(*) DESC, s."playerId", s.season;
 END;
