@@ -283,5 +283,177 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Create a table to store ETL run statistics
+CREATE TABLE IF NOT EXISTS newapi.skaters_etl_log (
+    id SERIAL PRIMARY KEY,
+    run_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    total_processed INTEGER,
+    new_records INTEGER,
+    updated_records INTEGER,
+    unchanged_records INTEGER,
+    new_occurrences INTEGER,
+    run_duration INTERVAL,
+    notes TEXT
+);
+
+-- Create index for querying recent runs
+CREATE INDEX IF NOT EXISTS idx_skaters_etl_log_timestamp ON newapi.skaters_etl_log(run_timestamp);
+
+-- Enhanced function that logs results
+CREATE OR REPLACE FUNCTION insert_skaters_from_staging_with_logging()
+RETURNS TABLE(
+    total_processed INTEGER,
+    new_records INTEGER,
+    updated_records INTEGER,
+    unchanged_records INTEGER,
+    new_occurrences INTEGER,
+    run_duration INTERVAL
+) AS $$
+DECLARE
+    rows_processed INTEGER := 0;
+    new_count INTEGER := 0;
+    updated_count INTEGER := 0;
+    unchanged_count INTEGER := 0;
+    occurrence_count INTEGER := 0;
+    rec RECORD;
+    matching_record RECORD;
+    new_hash TEXT;
+    next_occurrence INTEGER;
+    found_match BOOLEAN;
+    start_time TIMESTAMP;
+    end_time TIMESTAMP;
+    duration INTERVAL;
+BEGIN
+    start_time := CURRENT_TIMESTAMP;
+    
+    -- Loop through each record in staging
+    FOR rec IN 
+        SELECT 
+            "playerId", headshot, "firstName", "lastName", "positionCode", 
+            "gamesPlayed", goals, assists, points, "plusMinus", "penaltyMinutes", 
+            "powerPlayGoals", "shorthandedGoals", "gameWinningGoals", 
+            "overtimeGoals", shots, "shootingPctg", "avgTimeOnIcePerGame", 
+            "avgShiftsPerGame", "faceoffWinPctg", season, "gameType", "triCode"
+        FROM staging1.skaters
+    LOOP
+        -- Generate hash for the new data
+        new_hash := generate_skater_data_hash(
+            rec."gamesPlayed", rec.goals, rec.assists, rec.points, rec."plusMinus",
+            rec."penaltyMinutes", rec."powerPlayGoals", rec."shorthandedGoals",
+            rec."gameWinningGoals", rec."overtimeGoals", rec.shots, rec."shootingPctg",
+            rec."avgTimeOnIcePerGame", rec."avgShiftsPerGame", rec."faceoffWinPctg"
+        );
+        
+        found_match := FALSE;
+        
+        -- Check all existing records for this player/season/gameType/team combination
+        FOR matching_record IN
+            SELECT * FROM newapi.skaters 
+            WHERE "playerId" = rec."playerId" 
+            AND season = rec.season 
+            AND "gameType" = rec."gameType" 
+            AND "triCode" = rec."triCode"
+            ORDER BY occurrence_number
+        LOOP
+            -- Check if this record has the same data (hash match)
+            IF matching_record.data_hash = new_hash THEN
+                -- Data hasn't changed - just update the timestamp
+                UPDATE newapi.skaters 
+                SET updated_at = CURRENT_TIMESTAMP
+                WHERE id = matching_record.id;
+                
+                unchanged_count := unchanged_count + 1;
+                found_match := TRUE;
+                EXIT; -- Break out of the loop
+            END IF;
+        END LOOP;
+        
+        -- If no matching hash was found, we need to insert
+        IF NOT found_match THEN
+            -- Get the next occurrence number for this combination
+            SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
+            FROM newapi.skaters 
+            WHERE "playerId" = rec."playerId" 
+            AND season = rec.season 
+            AND "gameType" = rec."gameType" 
+            AND "triCode" = rec."triCode";
+            
+            -- Insert new record with the next occurrence number
+            INSERT INTO newapi.skaters (
+                "playerId", headshot, "firstName", "lastName", "positionCode", 
+                "gamesPlayed", goals, assists, points, "plusMinus", "penaltyMinutes", 
+                "powerPlayGoals", "shorthandedGoals", "gameWinningGoals", 
+                "overtimeGoals", shots, "shootingPctg", "avgTimeOnIcePerGame", 
+                "avgShiftsPerGame", "faceoffWinPctg", season, "gameType", "triCode",
+                occurrence_number, data_hash
+            ) VALUES (
+                rec."playerId", rec.headshot, rec."firstName", rec."lastName", rec."positionCode",
+                rec."gamesPlayed", rec.goals, rec.assists, rec.points, rec."plusMinus", 
+                rec."penaltyMinutes", rec."powerPlayGoals", rec."shorthandedGoals", 
+                rec."gameWinningGoals", rec."overtimeGoals", rec.shots, rec."shootingPctg", 
+                rec."avgTimeOnIcePerGame", rec."avgShiftsPerGame", rec."faceoffWinPctg", 
+                rec.season, rec."gameType", rec."triCode", next_occurrence, new_hash
+            );
+            
+            IF next_occurrence = 1 THEN
+                new_count := new_count + 1;
+            ELSE
+                occurrence_count := occurrence_count + 1;
+            END IF;
+        END IF;
+        
+        rows_processed := rows_processed + 1;
+    END LOOP;
+    
+    end_time := CURRENT_TIMESTAMP;
+    duration := end_time - start_time;
+    
+    -- Log the results
+    INSERT INTO newapi.skaters_etl_log (
+        total_processed, new_records, updated_records, unchanged_records, 
+        new_occurrences, run_duration
+    ) VALUES (
+        rows_processed, new_count, updated_count, unchanged_count, 
+        occurrence_count, duration
+    );
+    
+    RETURN QUERY SELECT rows_processed, new_count, updated_count, unchanged_count, occurrence_count, duration;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Updated procedure to use the logging function
+CREATE OR REPLACE PROCEDURE sync_skaters_from_staging()
+LANGUAGE plpgsql AS $$
+DECLARE
+    result_record RECORD;
+BEGIN
+    SELECT * FROM insert_skaters_from_staging_with_logging() INTO result_record;
+    
+    RAISE NOTICE 'Sync completed in %:', result_record.run_duration;
+    RAISE NOTICE '  Total processed: %', result_record.total_processed;
+    RAISE NOTICE '  New player/team combinations: %', result_record.new_records;
+    RAISE NOTICE '  Unchanged records (same data): %', result_record.unchanged_records;
+    RAISE NOTICE '  New occurrences (same team, different stats): %', result_record.new_occurrences;
+END;
+$$;
+
+-- View to see recent ETL runs
+CREATE OR REPLACE VIEW newapi.skaters_etl_summary AS
+SELECT 
+    id,
+    run_timestamp,
+    total_processed,
+    new_records,
+    unchanged_records,
+    new_occurrences,
+    run_duration,
+    ROUND(EXTRACT(EPOCH FROM run_duration)::NUMERIC, 2) as duration_seconds,
+    CASE 
+        WHEN total_processed > 0 THEN ROUND((new_records + new_occurrences)::NUMERIC / total_processed * 100, 1)
+        ELSE 0 
+    END as change_percentage
+FROM newapi.skaters_etl_log
+ORDER BY run_timestamp DESC;
+
 -- Execute the sync
 CALL sync_skaters_from_staging();
