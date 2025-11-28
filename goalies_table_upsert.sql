@@ -36,6 +36,7 @@ CREATE TABLE newapi.goalies (
     team TEXT,
     occurrence_number INTEGER DEFAULT 1,  -- 1st, 2nd, 3rd time with same team in season
     data_hash TEXT,                       -- Hash of key data fields to detect actual changes
+    is_active BOOLEAN DEFAULT TRUE,       -- Only one active record per player/season/gameType/team
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     
@@ -48,6 +49,7 @@ CREATE INDEX idx_goalies_player_id ON newapi.goalies("playerId");
 CREATE INDEX idx_goalies_season ON newapi.goalies(season);
 CREATE INDEX idx_goalies_team ON newapi.goalies(team);
 CREATE INDEX idx_goalies_occurrence ON newapi.goalies("playerId", season, "gameType", team, occurrence_number);
+CREATE INDEX idx_goalies_active ON newapi.goalies("playerId", season, "gameType", team, is_active) WHERE is_active = TRUE;
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.goalies_etl_log (
@@ -155,15 +157,16 @@ BEGIN
         
         found_match := FALSE;
         
-        -- Check all existing records for this player/season/gameType/team combination
-        FOR matching_record IN
-            SELECT * FROM newapi.goalies 
-            WHERE "playerId" = rec."playerId" 
-            AND season = rec.season 
-            AND "gameType" = rec."gameType" 
-            AND team = rec.team
-            ORDER BY occurrence_number
-        LOOP
+        -- Check the active record for this player/season/gameType/team combination
+        SELECT * INTO matching_record FROM newapi.goalies 
+        WHERE "playerId" = rec."playerId" 
+        AND season = rec.season 
+        AND "gameType" = rec."gameType" 
+        AND team = rec.team
+        AND is_active = TRUE
+        LIMIT 1;
+        
+        IF FOUND THEN
             -- Check if this record has the same data (hash match)
             IF matching_record.data_hash = new_hash THEN
                 -- Data hasn't changed - just update the timestamp
@@ -173,9 +176,16 @@ BEGIN
                 
                 unchanged_count := unchanged_count + 1;
                 found_match := TRUE;
-                EXIT; -- Break out of the loop
+            ELSE
+                -- Data has changed - deactivate the old record and mark for new insert
+                UPDATE newapi.goalies 
+                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                WHERE id = matching_record.id;
+                
+                updated_count := updated_count + 1;
+                found_match := FALSE; -- Will trigger insert of new active record
             END IF;
-        END LOOP;
+        END IF;
         
         -- If no matching hash was found, we need to insert
         IF NOT found_match THEN
@@ -187,19 +197,19 @@ BEGIN
             AND "gameType" = rec."gameType" 
             AND team = rec.team;
             
-            -- Insert new record with the next occurrence number
+            -- Insert new record with the next occurrence number (active by default)
             INSERT INTO newapi.goalies (
                 "playerId", headshot, "firstName", "lastName", "gamesPlayed", 
                 "gamesStarted", wins, losses, "overtimeLosses", "goalsAgainstAverage", 
                 "savePercentage", "shotsAgainst", saves, "goalsAgainst", shutouts, 
                 goals, assists, points, "penaltyMinutes", "timeOnIce", ties,
-                season, "gameType", team, occurrence_number, data_hash
+                season, "gameType", team, occurrence_number, data_hash, is_active
             ) VALUES (
                 rec."playerId", rec.headshot, rec."firstName", rec."lastName", rec."gamesPlayed",
                 rec."gamesStarted", rec.wins, rec.losses, rec."overtimeLosses", rec."goalsAgainstAverage",
                 rec."savePercentage", rec."shotsAgainst", rec.saves, rec."goalsAgainst", rec.shutouts,
                 rec.goals, rec.assists, rec.points, rec."penaltyMinutes", rec."timeOnIce", rec.ties,
-                rec.season, rec."gameType", rec.team, next_occurrence, new_hash
+                rec.season, rec."gameType", rec.team, next_occurrence, new_hash, TRUE
             );
             
             IF next_occurrence = 1 THEN
@@ -244,18 +254,9 @@ BEGIN
 END;
 $$;
 
--- View to show current/latest goalie stats (highest occurrence number for each combination)
+-- View to show current/latest goalie stats (only active records)
 CREATE OR REPLACE VIEW newapi.goalies_current AS
-SELECT g.* FROM newapi.goalies g
-INNER JOIN (
-    SELECT "playerId", season, "gameType", team, MAX(occurrence_number) as max_occurrence
-    FROM newapi.goalies
-    GROUP BY "playerId", season, "gameType", team
-) latest ON g."playerId" = latest."playerId" 
-    AND g.season = latest.season 
-    AND g."gameType" = latest."gameType" 
-    AND g.team = latest.team
-    AND g.occurrence_number = latest.max_occurrence;
+SELECT * FROM newapi.goalies WHERE is_active = TRUE;
 
 -- View to show goalies with multiple stints on same team
 CREATE OR REPLACE VIEW newapi.goalies_multiple_stints AS
