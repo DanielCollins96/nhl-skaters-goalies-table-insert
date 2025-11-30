@@ -29,6 +29,7 @@ CREATE TABLE newapi.skaters (
     "faceoffWinPctg" DOUBLE PRECISION,
     "firstName" TEXT,  -- Simplified from localized fields
     "lastName" TEXT,   -- Simplified from localized fields
+    "fullName" TEXT,
     season BIGINT,
     "gameType" BIGINT,
     "triCode" TEXT,    -- Changed from abbreviation to match staging
@@ -112,7 +113,7 @@ BEGIN
     -- Loop through each record in staging
     FOR rec IN 
         SELECT 
-            "playerId", headshot, "firstName", "lastName", "positionCode", 
+            "playerId", headshot, "firstName", "lastName", "fullName", "positionCode", 
             "gamesPlayed", goals, assists, points, "plusMinus", "penaltyMinutes", 
             "powerPlayGoals", "shorthandedGoals", "gameWinningGoals", 
             "overtimeGoals", shots, "shootingPctg", "avgTimeOnIcePerGame", 
@@ -132,8 +133,8 @@ BEGIN
         -- Check the active record for this player/season/gameType/team combination
         SELECT * INTO matching_record FROM newapi.skaters 
         WHERE "playerId" = rec."playerId" 
-        AND season = rec.season 
-        AND "gameType" = rec."gameType" 
+        AND season = rec.season::BIGINT 
+        AND "gameType" = rec."gameType"::BIGINT 
         AND "triCode" = rec."triCode"
         AND is_active = TRUE
         LIMIT 1;
@@ -165,25 +166,25 @@ BEGIN
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
             FROM newapi.skaters 
             WHERE "playerId" = rec."playerId" 
-            AND season = rec.season 
-            AND "gameType" = rec."gameType" 
+            AND season = rec.season::BIGINT 
+            AND "gameType" = rec."gameType"::BIGINT 
             AND "triCode" = rec."triCode";
             
             -- Insert new record with the next occurrence number (active by default)
             INSERT INTO newapi.skaters (
-                "playerId", headshot, "firstName", "lastName", "positionCode", 
+                "playerId", headshot, "firstName", "lastName", "fullName", "positionCode", 
                 "gamesPlayed", goals, assists, points, "plusMinus", "penaltyMinutes", 
                 "powerPlayGoals", "shorthandedGoals", "gameWinningGoals", 
                 "overtimeGoals", shots, "shootingPctg", "avgTimeOnIcePerGame", 
                 "avgShiftsPerGame", "faceoffWinPctg", season, "gameType", "triCode",
                 occurrence_number, data_hash, is_active
             ) VALUES (
-                rec."playerId", rec.headshot, rec."firstName", rec."lastName", rec."positionCode",
+                rec."playerId", rec.headshot, rec."firstName", rec."lastName", rec."fullName", rec."positionCode",
                 rec."gamesPlayed", rec.goals, rec.assists, rec.points, rec."plusMinus", 
                 rec."penaltyMinutes", rec."powerPlayGoals", rec."shorthandedGoals", 
                 rec."gameWinningGoals", rec."overtimeGoals", rec.shots, rec."shootingPctg", 
                 rec."avgTimeOnIcePerGame", rec."avgShiftsPerGame", rec."faceoffWinPctg", 
-                rec.season, rec."gameType", rec."triCode", next_occurrence, new_hash, TRUE
+                rec.season::BIGINT, rec."gameType"::BIGINT, rec."triCode", next_occurrence, new_hash, TRUE
             );
             
             IF next_occurrence = 1 THEN
@@ -330,7 +331,7 @@ BEGIN
     -- Loop through each record in staging
     FOR rec IN 
         SELECT 
-            "playerId", headshot, "firstName", "lastName", "positionCode", 
+            "playerId", headshot, "firstName", "lastName", "fullName", "positionCode", 
             "gamesPlayed", goals, assists, points, "plusMinus", "penaltyMinutes", 
             "powerPlayGoals", "shorthandedGoals", "gameWinningGoals", 
             "overtimeGoals", shots, "shootingPctg", "avgTimeOnIcePerGame", 
@@ -350,8 +351,8 @@ BEGIN
         -- Check the active record for this player/season/gameType/team combination
         SELECT * INTO matching_record FROM newapi.skaters 
         WHERE "playerId" = rec."playerId" 
-        AND season = rec.season 
-        AND "gameType" = rec."gameType" 
+        AND season = rec.season::BIGINT 
+        AND "gameType" = rec."gameType"::BIGINT 
         AND "triCode" = rec."triCode"
         AND is_active = TRUE
         LIMIT 1;
@@ -383,25 +384,25 @@ BEGIN
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
             FROM newapi.skaters 
             WHERE "playerId" = rec."playerId" 
-            AND season = rec.season 
-            AND "gameType" = rec."gameType" 
+            AND season = rec.season::BIGINT 
+            AND "gameType" = rec."gameType"::BIGINT 
             AND "triCode" = rec."triCode";
             
             -- Insert new record with the next occurrence number (active by default)
             INSERT INTO newapi.skaters (
-                "playerId", headshot, "firstName", "lastName", "positionCode", 
+                "playerId", headshot, "firstName", "lastName", "fullName", "positionCode", 
                 "gamesPlayed", goals, assists, points, "plusMinus", "penaltyMinutes", 
                 "powerPlayGoals", "shorthandedGoals", "gameWinningGoals", 
                 "overtimeGoals", shots, "shootingPctg", "avgTimeOnIcePerGame", 
                 "avgShiftsPerGame", "faceoffWinPctg", season, "gameType", "triCode",
                 occurrence_number, data_hash, is_active
             ) VALUES (
-                rec."playerId", rec.headshot, rec."firstName", rec."lastName", rec."positionCode",
+                rec."playerId", rec.headshot, rec."firstName", rec."lastName", rec."fullName", rec."positionCode",
                 rec."gamesPlayed", rec.goals, rec.assists, rec.points, rec."plusMinus", 
                 rec."penaltyMinutes", rec."powerPlayGoals", rec."shorthandedGoals", 
                 rec."gameWinningGoals", rec."overtimeGoals", rec.shots, rec."shootingPctg", 
                 rec."avgTimeOnIcePerGame", rec."avgShiftsPerGame", rec."faceoffWinPctg", 
-                rec.season, rec."gameType", rec."triCode", next_occurrence, new_hash, TRUE
+                rec.season::BIGINT, rec."gameType"::BIGINT, rec."triCode", next_occurrence, new_hash, TRUE
             );
             
             IF next_occurrence = 1 THEN
