@@ -174,12 +174,30 @@ BEGIN
     LOOP
         -- Generate hash for the new data
         new_hash := generate_player_data_hash(
-            rec."isActive", rec."currentTeamId", rec."currentTeamAbbrev", rec.fullTeamName,
-            rec."sweaterNumber", rec."position", rec.headshot, rec."heroImage",
-            rec."heightInInches", rec."heightInCentimeters", rec."weightInPounds", rec."weightInKilograms",
-            rec."birthDate", rec.birthCity, rec.birthStateProvince, rec."birthCountry",
-            rec."shootsCatches", rec."inTop100AllTime", rec."inHHOF",
-            rec.draftYear, rec.draftTeamAbbrev, rec.draftRound, rec.draftPickInRound, rec.draftOverallPick
+            rec."isActive", 
+            rec."currentTeamId"::DOUBLE PRECISION, 
+            rec."currentTeamAbbrev", 
+            rec.fullTeamName,
+            rec."sweaterNumber"::DOUBLE PRECISION, 
+            rec."position", 
+            rec.headshot, 
+            rec."heroImage",
+            rec."heightInInches"::DOUBLE PRECISION, 
+            rec."heightInCentimeters"::DOUBLE PRECISION, 
+            rec."weightInPounds"::DOUBLE PRECISION, 
+            rec."weightInKilograms"::DOUBLE PRECISION,
+            rec."birthDate", 
+            rec.birthCity, 
+            rec.birthStateProvince, 
+            rec."birthCountry",
+            rec."shootsCatches", 
+            rec."inTop100AllTime"::BIGINT, 
+            rec."inHHOF"::BIGINT,
+            rec.draftYear::DOUBLE PRECISION, 
+            rec.draftTeamAbbrev, 
+            rec.draftRound::DOUBLE PRECISION, 
+            rec.draftPickInRound::DOUBLE PRECISION, 
+            rec.draftOverallPick::DOUBLE PRECISION
         );
         
         found_match := FALSE;
@@ -301,4 +319,4 @@ FROM newapi.players_etl_log
 ORDER BY run_timestamp DESC;
 
 -- Execute the sync
-CALL sync_players_from_staging();
+-- CALL sync_players_from_staging();

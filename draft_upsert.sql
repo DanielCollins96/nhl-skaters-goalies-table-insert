@@ -1,3 +1,7 @@
+-- Ensure the schema exists
+CREATE SCHEMA IF NOT EXISTS newapi;
+CREATE SCHEMA IF NOT EXISTS staging1;
+
 -- Drop existing objects to avoid conflicts when rerun
 DROP FUNCTION IF EXISTS upsert_drafts_from_staging_with_logging() CASCADE;
 DROP PROCEDURE IF EXISTS sync_drafts_from_staging() CASCADE;
@@ -9,6 +13,7 @@ CREATE TABLE IF NOT EXISTS newapi."drafts" (
     "round" INTEGER NOT NULL,
     "pickInRound" INTEGER NOT NULL,
     "overallPick" INTEGER,
+    "ordinalPick" TEXT,
     "teamId" BIGINT,
     "teamName" TEXT,
     "teamCommonName" TEXT,
@@ -77,6 +82,23 @@ BEGIN
             NULLIF(d."round"::text, '')::INTEGER AS "round",
             NULLIF(d."pickInRound"::text, '')::INTEGER AS "pickInRound",
             NULLIF(d."overallPick"::text, '')::INTEGER AS "overallPick",
+            -- Compute ordinal pick (1st, 2nd, 3rd, 4th, etc.) mirroring the JS getOrdinalSuffix logic
+            CASE
+                WHEN NULLIF(d."overallPick"::text, '')::INTEGER IS NULL THEN NULL
+                ELSE NULLIF(d."overallPick"::text, '')::INTEGER::text ||
+                    CASE
+                        WHEN (NULLIF(d."overallPick"::text, '')::INTEGER % 10 = 1
+                              AND NULLIF(d."overallPick"::text, '')::INTEGER % 100 <> 11)
+                            THEN 'st'
+                        WHEN (NULLIF(d."overallPick"::text, '')::INTEGER % 10 = 2
+                              AND NULLIF(d."overallPick"::text, '')::INTEGER % 100 <> 12)
+                            THEN 'nd'
+                        WHEN (NULLIF(d."overallPick"::text, '')::INTEGER % 10 = 3
+                              AND NULLIF(d."overallPick"::text, '')::INTEGER % 100 <> 13)
+                            THEN 'rd'
+                        ELSE 'th'
+                    END
+            END AS "ordinalPick",
             NULLIF(d."teamId"::text, '')::BIGINT AS "teamId",
             d."teamName" AS "teamName",
             d."teamCommonName" AS "teamCommonName",
@@ -110,7 +132,7 @@ BEGIN
             "teamPlaceNameWithPreposition", "displayAbbrev", "teamLogoLight", "teamLogoDark",
             "firstName", "lastName", "positionCode", "countryCode",
             "height", "weight", "amateurLeague", "amateurClubName",
-            "playerId"
+            "ordinalPick", "playerId"
         )
         SELECT
             s."draftYear", s."teamAbbrev", s."round", s."pickInRound",
@@ -118,13 +140,20 @@ BEGIN
             s."teamPlaceNameWithPreposition", s."displayAbbrev", s."teamLogoLight", s."teamLogoDark",
             s."firstName", s."lastName", s."positionCode", s."countryCode",
             s."height", s."weight", s."amateurLeague", s."amateurClubName",
-            s."playerId"
+            s."ordinalPick", s."playerId"
         FROM src s
         ON CONFLICT ("draftYear", "teamAbbrev", "round", "pickInRound") DO UPDATE
-        SET "playerId" = COALESCE(EXCLUDED."playerId", newapi."drafts"."playerId"),
+        SET
+            "playerId" = COALESCE(EXCLUDED."playerId", newapi."drafts"."playerId"),
+            "ordinalPick" = COALESCE(EXCLUDED."ordinalPick", newapi."drafts"."ordinalPick"),
             updated_at = CURRENT_TIMESTAMP
-        WHERE EXCLUDED."playerId" IS NOT NULL
-          AND newapi."drafts"."playerId" IS DISTINCT FROM EXCLUDED."playerId"
+        WHERE (
+            EXCLUDED."playerId" IS NOT NULL
+            AND newapi."drafts"."playerId" IS DISTINCT FROM EXCLUDED."playerId"
+        ) OR (
+            EXCLUDED."ordinalPick" IS NOT NULL
+            AND newapi."drafts"."ordinalPick" IS DISTINCT FROM EXCLUDED."ordinalPick"
+        )
         RETURNING xmax
     ), counts AS (
         SELECT
@@ -190,6 +219,10 @@ ORDER BY run_timestamp DESC;
 -- apply a forward-compatible ALTER (safe to rerun).
 ALTER TABLE IF EXISTS newapi.drafts_etl_log
     ADD COLUMN IF NOT EXISTS unchanged_records INTEGER;
+
+-- Ensure `ordinalPick` column exists for forward-compatibility when re-running this script
+ALTER TABLE IF EXISTS newapi."drafts"
+    ADD COLUMN IF NOT EXISTS "ordinalPick" TEXT;
 
 -- Optional immediate execution
 -- CALL sync_drafts_from_staging();

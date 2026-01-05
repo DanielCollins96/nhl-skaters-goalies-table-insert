@@ -2,7 +2,7 @@
 DROP FUNCTION IF EXISTS insert_rosters_from_staging() CASCADE;
 DROP FUNCTION IF EXISTS insert_rosters_from_staging_with_logging() CASCADE;
 DROP FUNCTION IF EXISTS get_rosters_occurrence_stats() CASCADE;
-DROP FUNCTION IF EXISTS generate_roster_data_hash(TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS generate_roster_data_hash(TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TEXT) CASCADE;
 DROP PROCEDURE IF EXISTS sync_rosters_from_staging() CASCADE;
 
 DROP TABLE IF EXISTS newapi.current_rosters CASCADE;
@@ -158,8 +158,10 @@ BEGIN
         new_hash := generate_roster_data_hash(
             rec."teamAbbreviation", rec."positionGroup", rec."playerId", rec.headshot,
             rec."firstName", rec."lastName", rec."sweaterNumber"::TEXT, rec."positionCode",
-            rec."shootsCatches", rec."heightInInches", rec."weightInPounds",
-            rec."heightInCentimeters", rec."weightInKilograms", rec."birthDate",
+            rec."shootsCatches", 
+            rec."heightInInches"::BIGINT, rec."weightInPounds"::BIGINT,
+            rec."heightInCentimeters"::BIGINT, rec."weightInKilograms"::BIGINT, 
+            rec."birthDate",
             rec."birthCity", rec."birthCountry", rec."birthStateProvince"
         );
         
@@ -203,7 +205,7 @@ BEGIN
                 active, occurrence_number, data_hash
             ) VALUES (
                 rec."teamAbbreviation", rec."positionGroup", rec."playerId", rec.headshot,
-                rec."firstName", rec."lastName", rec."sweaterNumber", rec."positionCode",
+                rec."firstName", rec."lastName", rec."sweaterNumber"::DOUBLE PRECISION, rec."positionCode",
                 rec."shootsCatches", rec."heightInInches", rec."weightInPounds",
                 rec."heightInCentimeters", rec."weightInKilograms", rec."birthDate",
                 rec."birthCity", rec."birthCountry", rec."birthStateProvince",
@@ -362,4 +364,4 @@ FROM newapi.rosters_etl_log
 ORDER BY run_timestamp DESC;
 
 -- Execute the sync
-CALL sync_rosters_from_staging();
+-- CALL sync_rosters_from_staging();

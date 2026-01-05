@@ -153,6 +153,28 @@ DECLARE
 BEGIN
     start_time := CURRENT_TIMESTAMP;
     
+    -- Ensure missing columns exist in staging
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.cs" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.de" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.es" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.fi" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.sk" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.sv" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.fr" TEXT;
+    
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamName.cs" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamName.de" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamName.fi" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamName.sk" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamName.sv" TEXT;
+    
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.cs" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.es" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.fi" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.sk" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.sv" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.fr" TEXT;
+
     -- Loop through each record in staging
     FOR rec IN 
         SELECT 
@@ -383,5 +405,5 @@ SELECT
 FROM newapi.season_goalie_etl_log
 ORDER BY run_timestamp DESC;
 
--- Execute the sync
-CALL sync_season_goalies_from_staging();
+-- Execute the sync AFTER you've loaded staging1.season_goalie with pandas to_sql
+-- CALL sync_season_goalies_from_staging();

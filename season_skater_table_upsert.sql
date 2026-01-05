@@ -393,4 +393,4 @@ FROM newapi.season_skater_etl_log
 ORDER BY run_timestamp DESC;
 
 -- Execute the sync
-CALL sync_season_skaters_from_staging();
+-- CALL sync_season_skaters_from_staging();
