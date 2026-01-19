@@ -194,8 +194,35 @@ BEGIN
     RAISE NOTICE '  Inserted records: %', result_record.inserted_records;
     RAISE NOTICE '  Updated playerId records: %', result_record.updated_playerid_records;
     RAISE NOTICE '  Unchanged records: %', result_record.unchanged_records;
+    -- Attempt to backfill any remaining NULL playerId values from newapi.players
+    CALL backfill_draft_playerids();
 END;
 $$;
+
+-- Procedure: Backfill missing playerId values in newapi."drafts" from newapi."players"
+CREATE OR REPLACE PROCEDURE backfill_draft_playerids()
+LANGUAGE plpgsql AS $$
+DECLARE
+    updated_count INTEGER := 0;
+BEGIN
+    UPDATE newapi."drafts" d
+    SET "playerId" = p."playerId",
+        updated_at = CURRENT_TIMESTAMP
+    FROM newapi."players" p
+    WHERE d."playerId" IS NULL
+      AND p."playerId" IS NOT NULL
+      AND p."draftYear" = d."draftYear"
+      AND upper(trim(p."draftTeamAbbrev")) = upper(trim(d."teamAbbrev"))
+      AND p."draftRound" = d."round"
+      AND p."draftPickInRound" = d."pickInRound";
+
+    GET DIAGNOSTICS updated_count = ROW_COUNT;
+    RAISE NOTICE 'Backfilled playerId for % draft record(s)', updated_count;
+END;
+$$;
+
+-- Ensure summary view can be recreated when column names change
+DROP VIEW IF EXISTS newapi.drafts_etl_summary CASCADE;
 
 -- Summary view of recent drafts ETL runs
 CREATE OR REPLACE VIEW newapi.drafts_etl_summary AS
