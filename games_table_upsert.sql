@@ -6,7 +6,7 @@ CREATE SCHEMA IF NOT EXISTS staging1;
 DROP FUNCTION IF EXISTS upsert_games_from_staging_with_logging() CASCADE;
 DROP PROCEDURE IF EXISTS sync_games_from_staging() CASCADE;
 
--- Create the production games table
+-- Create the production games table (simplified)
 CREATE TABLE IF NOT EXISTS newapi.games (
     id BIGINT PRIMARY KEY,
     season INTEGER,
@@ -16,47 +16,23 @@ CREATE TABLE IF NOT EXISTS newapi.games (
     "gameScheduleState" TEXT,
     "startTimeUTC" TIMESTAMP WITH TIME ZONE,
     "venueTimezone" TEXT,
-    "venueUTCOffset" TEXT,
-    "easternUTCOffset" TEXT,
     "neutralSite" BOOLEAN,
     "venue_default" TEXT,
     "tvBroadcasts" TEXT,
-    "gameCenterLink" TEXT,
-    "threeMinRecap" TEXT,
-    "threeMinRecapFr" TEXT,
-    "condensedGame" TEXT,
-    "condensedGameFr" TEXT,
     -- Away team columns
     "awayTeam_id" INTEGER,
     "awayTeam_abbrev" TEXT,
     "awayTeam_score" INTEGER,
-    "awayTeam_commonName_default" TEXT,
-    "awayTeam_placeName_default" TEXT,
-    "awayTeam_logo" TEXT,
-    "awayTeam_darkLogo" TEXT,
     -- Home team columns
     "homeTeam_id" INTEGER,
     "homeTeam_abbrev" TEXT,
     "homeTeam_score" INTEGER,
-    "homeTeam_commonName_default" TEXT,
-    "homeTeam_placeName_default" TEXT,
-    "homeTeam_logo" TEXT,
-    "homeTeam_darkLogo" TEXT,
     -- Period/outcome columns
     "periodDescriptor_periodType" TEXT,
-    "periodDescriptor_maxRegulationPeriods" INTEGER,
     "gameOutcome_lastPeriodType" TEXT,
     -- Winner columns
     "winningGoalie_playerId" BIGINT,
-    "winningGoalie_firstInitial_default" TEXT,
-    "winningGoalie_lastName_default" TEXT,
     "winningGoalScorer_playerId" BIGINT,
-    "winningGoalScorer_firstInitial_default" TEXT,
-    "winningGoalScorer_lastName_default" TEXT,
-    -- Tickets/links
-    "ticketsLink" TEXT,
-    "ticketsLinkFr" TEXT,
-    "specialEvent" TEXT,
     -- Timestamps
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -96,77 +72,7 @@ CREATE TABLE IF NOT EXISTS newapi.games_etl_log (
 CREATE INDEX IF NOT EXISTS idx_games_etl_log_timestamp
     ON newapi.games_etl_log (run_timestamp);
 
--- Add missing columns to staging table (pandas may not create all columns)
-DO $$
-BEGIN
-    -- Core columns
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'specialEvent') THEN
-        ALTER TABLE staging1.games ADD COLUMN "specialEvent" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'ticketsLink') THEN
-        ALTER TABLE staging1.games ADD COLUMN "ticketsLink" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'ticketsLinkFr') THEN
-        ALTER TABLE staging1.games ADD COLUMN "ticketsLinkFr" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'threeMinRecap') THEN
-        ALTER TABLE staging1.games ADD COLUMN "threeMinRecap" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'threeMinRecapFr') THEN
-        ALTER TABLE staging1.games ADD COLUMN "threeMinRecapFr" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'condensedGame') THEN
-        ALTER TABLE staging1.games ADD COLUMN "condensedGame" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'condensedGameFr') THEN
-        ALTER TABLE staging1.games ADD COLUMN "condensedGameFr" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'gameCenterLink') THEN
-        ALTER TABLE staging1.games ADD COLUMN "gameCenterLink" TEXT;
-    END IF;
-    -- Winner columns (only present for finished games)
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'winningGoalie_playerId') THEN
-        ALTER TABLE staging1.games ADD COLUMN "winningGoalie_playerId" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'winningGoalie_firstInitial_default') THEN
-        ALTER TABLE staging1.games ADD COLUMN "winningGoalie_firstInitial_default" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'winningGoalie_lastName_default') THEN
-        ALTER TABLE staging1.games ADD COLUMN "winningGoalie_lastName_default" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'winningGoalScorer_playerId') THEN
-        ALTER TABLE staging1.games ADD COLUMN "winningGoalScorer_playerId" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'winningGoalScorer_firstInitial_default') THEN
-        ALTER TABLE staging1.games ADD COLUMN "winningGoalScorer_firstInitial_default" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'winningGoalScorer_lastName_default') THEN
-        ALTER TABLE staging1.games ADD COLUMN "winningGoalScorer_lastName_default" TEXT;
-    END IF;
-    -- Outcome columns (only present for finished games)
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'gameOutcome_lastPeriodType') THEN
-        ALTER TABLE staging1.games ADD COLUMN "gameOutcome_lastPeriodType" TEXT;
-    END IF;
-    -- Team columns that may vary
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'awayTeam_logo') THEN
-        ALTER TABLE staging1.games ADD COLUMN "awayTeam_logo" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'awayTeam_darkLogo') THEN
-        ALTER TABLE staging1.games ADD COLUMN "awayTeam_darkLogo" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'homeTeam_logo') THEN
-        ALTER TABLE staging1.games ADD COLUMN "homeTeam_logo" TEXT;
-    END IF;
-    IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'staging1' AND table_name = 'games' AND column_name = 'homeTeam_darkLogo') THEN
-        ALTER TABLE staging1.games ADD COLUMN "homeTeam_darkLogo" TEXT;
-    END IF;
-EXCEPTION
-    WHEN undefined_table THEN
-        RAISE NOTICE 'staging1.games table does not exist yet - will be created by pandas';
-END;
-$$;
-
--- Function: Upsert games with logging
+-- Function: Upsert games with logging (simplified - only essential columns)
 CREATE OR REPLACE FUNCTION upsert_games_from_staging_with_logging()
 RETURNS TABLE(
     total_processed INTEGER,
@@ -196,83 +102,41 @@ BEGIN
             g."gameScheduleState" AS "gameScheduleState",
             NULLIF(g."startTimeUTC"::text, '')::TIMESTAMP WITH TIME ZONE AS "startTimeUTC",
             g."venueTimezone" AS "venueTimezone",
-            g."venueUTCOffset" AS "venueUTCOffset",
-            g."easternUTCOffset" AS "easternUTCOffset",
             g."neutralSite"::BOOLEAN AS "neutralSite",
             g."venue_default" AS "venue_default",
             g."tvBroadcasts" AS "tvBroadcasts",
-            g."gameCenterLink" AS "gameCenterLink",
-            g."threeMinRecap" AS "threeMinRecap",
-            g."threeMinRecapFr" AS "threeMinRecapFr",
-            g."condensedGame" AS "condensedGame",
-            g."condensedGameFr" AS "condensedGameFr",
             -- Away team
             NULLIF(g."awayTeam_id"::text, '')::INTEGER AS "awayTeam_id",
             g."awayTeam_abbrev" AS "awayTeam_abbrev",
             NULLIF(g."awayTeam_score"::text, '')::INTEGER AS "awayTeam_score",
-            g."awayTeam_commonName_default" AS "awayTeam_commonName_default",
-            g."awayTeam_placeName_default" AS "awayTeam_placeName_default",
-            g."awayTeam_logo" AS "awayTeam_logo",
-            g."awayTeam_darkLogo" AS "awayTeam_darkLogo",
             -- Home team
             NULLIF(g."homeTeam_id"::text, '')::INTEGER AS "homeTeam_id",
             g."homeTeam_abbrev" AS "homeTeam_abbrev",
             NULLIF(g."homeTeam_score"::text, '')::INTEGER AS "homeTeam_score",
-            g."homeTeam_commonName_default" AS "homeTeam_commonName_default",
-            g."homeTeam_placeName_default" AS "homeTeam_placeName_default",
-            g."homeTeam_logo" AS "homeTeam_logo",
-            g."homeTeam_darkLogo" AS "homeTeam_darkLogo",
             -- Period/outcome
             g."periodDescriptor_periodType" AS "periodDescriptor_periodType",
-            NULLIF(g."periodDescriptor_maxRegulationPeriods"::text, '')::INTEGER AS "periodDescriptor_maxRegulationPeriods",
             g."gameOutcome_lastPeriodType" AS "gameOutcome_lastPeriodType",
             -- Winners
             NULLIF(g."winningGoalie_playerId"::text, '')::BIGINT AS "winningGoalie_playerId",
-            g."winningGoalie_firstInitial_default" AS "winningGoalie_firstInitial_default",
-            g."winningGoalie_lastName_default" AS "winningGoalie_lastName_default",
-            NULLIF(g."winningGoalScorer_playerId"::text, '')::BIGINT AS "winningGoalScorer_playerId",
-            g."winningGoalScorer_firstInitial_default" AS "winningGoalScorer_firstInitial_default",
-            g."winningGoalScorer_lastName_default" AS "winningGoalScorer_lastName_default",
-            -- Tickets/links
-            g."ticketsLink" AS "ticketsLink",
-            g."ticketsLinkFr" AS "ticketsLinkFr",
-            g."specialEvent" AS "specialEvent"
+            NULLIF(g."winningGoalScorer_playerId"::text, '')::BIGINT AS "winningGoalScorer_playerId"
         FROM staging1.games g
         WHERE NULLIF(g.id::text, '')::BIGINT IS NOT NULL
     ), upsert AS (
         INSERT INTO newapi.games (
             id, season, "gameType", "gameDate", "gameState", "gameScheduleState",
-            "startTimeUTC", "venueTimezone", "venueUTCOffset", "easternUTCOffset",
-            "neutralSite", "venue_default", "tvBroadcasts", "gameCenterLink",
-            "threeMinRecap", "threeMinRecapFr", "condensedGame", "condensedGameFr",
+            "startTimeUTC", "venueTimezone", "neutralSite", "venue_default", "tvBroadcasts",
             "awayTeam_id", "awayTeam_abbrev", "awayTeam_score",
-            "awayTeam_commonName_default", "awayTeam_placeName_default",
-            "awayTeam_logo", "awayTeam_darkLogo",
             "homeTeam_id", "homeTeam_abbrev", "homeTeam_score",
-            "homeTeam_commonName_default", "homeTeam_placeName_default",
-            "homeTeam_logo", "homeTeam_darkLogo",
-            "periodDescriptor_periodType", "periodDescriptor_maxRegulationPeriods",
-            "gameOutcome_lastPeriodType",
-            "winningGoalie_playerId", "winningGoalie_firstInitial_default", "winningGoalie_lastName_default",
-            "winningGoalScorer_playerId", "winningGoalScorer_firstInitial_default", "winningGoalScorer_lastName_default",
-            "ticketsLink", "ticketsLinkFr", "specialEvent"
+            "periodDescriptor_periodType", "gameOutcome_lastPeriodType",
+            "winningGoalie_playerId", "winningGoalScorer_playerId"
         )
         SELECT
             s.id, s.season, s."gameType", s."gameDate", s."gameState", s."gameScheduleState",
-            s."startTimeUTC", s."venueTimezone", s."venueUTCOffset", s."easternUTCOffset",
-            s."neutralSite", s."venue_default", s."tvBroadcasts", s."gameCenterLink",
-            s."threeMinRecap", s."threeMinRecapFr", s."condensedGame", s."condensedGameFr",
+            s."startTimeUTC", s."venueTimezone", s."neutralSite", s."venue_default", s."tvBroadcasts",
             s."awayTeam_id", s."awayTeam_abbrev", s."awayTeam_score",
-            s."awayTeam_commonName_default", s."awayTeam_placeName_default",
-            s."awayTeam_logo", s."awayTeam_darkLogo",
             s."homeTeam_id", s."homeTeam_abbrev", s."homeTeam_score",
-            s."homeTeam_commonName_default", s."homeTeam_placeName_default",
-            s."homeTeam_logo", s."homeTeam_darkLogo",
-            s."periodDescriptor_periodType", s."periodDescriptor_maxRegulationPeriods",
-            s."gameOutcome_lastPeriodType",
-            s."winningGoalie_playerId", s."winningGoalie_firstInitial_default", s."winningGoalie_lastName_default",
-            s."winningGoalScorer_playerId", s."winningGoalScorer_firstInitial_default", s."winningGoalScorer_lastName_default",
-            s."ticketsLink", s."ticketsLinkFr", s."specialEvent"
+            s."periodDescriptor_periodType", s."gameOutcome_lastPeriodType",
+            s."winningGoalie_playerId", s."winningGoalScorer_playerId"
         FROM src s
         ON CONFLICT (id) DO UPDATE
         SET
@@ -283,19 +147,8 @@ BEGIN
             "periodDescriptor_periodType" = EXCLUDED."periodDescriptor_periodType",
             "gameOutcome_lastPeriodType" = EXCLUDED."gameOutcome_lastPeriodType",
             "winningGoalie_playerId" = EXCLUDED."winningGoalie_playerId",
-            "winningGoalie_firstInitial_default" = EXCLUDED."winningGoalie_firstInitial_default",
-            "winningGoalie_lastName_default" = EXCLUDED."winningGoalie_lastName_default",
             "winningGoalScorer_playerId" = EXCLUDED."winningGoalScorer_playerId",
-            "winningGoalScorer_firstInitial_default" = EXCLUDED."winningGoalScorer_firstInitial_default",
-            "winningGoalScorer_lastName_default" = EXCLUDED."winningGoalScorer_lastName_default",
-            "threeMinRecap" = EXCLUDED."threeMinRecap",
-            "threeMinRecapFr" = EXCLUDED."threeMinRecapFr",
-            "condensedGame" = EXCLUDED."condensedGame",
-            "condensedGameFr" = EXCLUDED."condensedGameFr",
-            "gameCenterLink" = EXCLUDED."gameCenterLink",
             "tvBroadcasts" = EXCLUDED."tvBroadcasts",
-            "ticketsLink" = EXCLUDED."ticketsLink",
-            "ticketsLinkFr" = EXCLUDED."ticketsLinkFr",
             updated_at = CURRENT_TIMESTAMP
         WHERE (
             EXCLUDED."gameState" IS DISTINCT FROM newapi.games."gameState"
@@ -306,10 +159,6 @@ BEGIN
             OR EXCLUDED."gameOutcome_lastPeriodType" IS DISTINCT FROM newapi.games."gameOutcome_lastPeriodType"
             OR EXCLUDED."winningGoalie_playerId" IS DISTINCT FROM newapi.games."winningGoalie_playerId"
             OR EXCLUDED."winningGoalScorer_playerId" IS DISTINCT FROM newapi.games."winningGoalScorer_playerId"
-            OR EXCLUDED."threeMinRecap" IS DISTINCT FROM newapi.games."threeMinRecap"
-            OR EXCLUDED."condensedGame" IS DISTINCT FROM newapi.games."condensedGame"
-            OR EXCLUDED."gameCenterLink" IS DISTINCT FROM newapi.games."gameCenterLink"
-            OR EXCLUDED."tvBroadcasts" IS DISTINCT FROM newapi.games."tvBroadcasts"
         )
         RETURNING xmax
     ), counts AS (
