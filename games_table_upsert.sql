@@ -142,7 +142,11 @@ BEGIN
         SET
             "gameState" = EXCLUDED."gameState",
             "gameScheduleState" = EXCLUDED."gameScheduleState",
+            "awayTeam_id" = EXCLUDED."awayTeam_id",
+            "awayTeam_abbrev" = EXCLUDED."awayTeam_abbrev",
             "awayTeam_score" = EXCLUDED."awayTeam_score",
+            "homeTeam_id" = EXCLUDED."homeTeam_id",
+            "homeTeam_abbrev" = EXCLUDED."homeTeam_abbrev",
             "homeTeam_score" = EXCLUDED."homeTeam_score",
             "periodDescriptor_periodType" = EXCLUDED."periodDescriptor_periodType",
             "gameOutcome_lastPeriodType" = EXCLUDED."gameOutcome_lastPeriodType",
@@ -153,7 +157,13 @@ BEGIN
         WHERE (
             EXCLUDED."gameState" IS DISTINCT FROM newapi.games."gameState"
             OR EXCLUDED."gameScheduleState" IS DISTINCT FROM newapi.games."gameScheduleState"
+            OR EXCLUDED."awayTeam_id" IS DISTINCT FROM newapi.games."awayTeam_id"
+            OR EXCLUDED."awayTeam_abbrev" IS DISTINCT FROM newapi.games."awayTeam_abbrev"
+            OR EXCLUDED."awayTeam_id" IS DISTINCT FROM newapi.games."awayTeam_id"
+            OR EXCLUDED."awayTeam_abbrev" IS DISTINCT FROM newapi.games."awayTeam_abbrev"
             OR EXCLUDED."awayTeam_score" IS DISTINCT FROM newapi.games."awayTeam_score"
+            OR EXCLUDED."homeTeam_id" IS DISTINCT FROM newapi.games."homeTeam_id"
+            OR EXCLUDED."homeTeam_abbrev" IS DISTINCT FROM newapi.games."homeTeam_abbrev"
             OR EXCLUDED."homeTeam_score" IS DISTINCT FROM newapi.games."homeTeam_score"
             OR EXCLUDED."periodDescriptor_periodType" IS DISTINCT FROM newapi.games."periodDescriptor_periodType"
             OR EXCLUDED."gameOutcome_lastPeriodType" IS DISTINCT FROM newapi.games."gameOutcome_lastPeriodType"
