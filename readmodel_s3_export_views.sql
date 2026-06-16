@@ -21,7 +21,10 @@ player_rows AS (
     SELECT
         p."playerId",
         JSONB_AGG(
-            TO_JSONB(p) - 'birthDate' || JSONB_BUILD_OBJECT('birthdate', p."birthDate")
+            TO_JSONB(p) - 'birthDate' || JSONB_BUILD_OBJECT(
+                'birthdate', p."birthDate",
+                'birthcountry', p."birthCountry"
+            )
             ORDER BY p.player_name
         ) AS player
     FROM readmodel.players p
@@ -37,14 +40,28 @@ player_positions AS (
 skater_stats AS (
     SELECT
         "playerId",
-        JSONB_AGG(TO_JSONB(s) - 'playerId' ORDER BY s."season" DESC, s."team.name") AS stats
+        JSONB_AGG(
+            TO_JSONB(s) - 'playerId' || JSONB_BUILD_OBJECT(
+                'birthdate', s."birthDate",
+                'birthcountry', s."birthCountry",
+                'age', s.age
+            )
+            ORDER BY s."season" DESC, s."team.name"
+        ) AS stats
     FROM readmodel.player_skater_stats s
     GROUP BY "playerId"
 ),
 goalie_stats AS (
     SELECT
         "playerId",
-        JSONB_AGG(TO_JSONB(g) - 'playerId' ORDER BY g."season" DESC, g."team.name") AS stats
+        JSONB_AGG(
+            TO_JSONB(g) - 'playerId' || JSONB_BUILD_OBJECT(
+                'birthdate', g."birthDate",
+                'birthcountry', g."birthCountry",
+                'age', g.age
+            )
+            ORDER BY g."season" DESC, g."team.name"
+        ) AS stats
     FROM readmodel.player_goalie_stats g
     GROUP BY "playerId"
 ),
@@ -54,6 +71,22 @@ awards AS (
         JSONB_AGG(TO_JSONB(a) ORDER BY a."seasonId" DESC) AS awards
     FROM readmodel.player_awards a
     GROUP BY "playerId"
+),
+contracts AS (
+    SELECT
+        "playerId",
+        JSONB_AGG(
+            TO_JSONB(c) - 'playerId'
+            ORDER BY c.start_season DESC NULLS LAST, c.end_season DESC NULLS LAST
+        ) AS contracts
+    FROM readmodel.player_contracts c
+    GROUP BY "playerId"
+),
+current_contracts AS (
+    SELECT
+        "playerId",
+        TO_JSONB(c) - 'playerId' AS current_contract
+    FROM readmodel.player_current_contract c
 )
 SELECT
     CONCAT('players/', ids."playerId", '.json') AS s3_key,
@@ -66,14 +99,18 @@ SELECT
             END,
             '[]'::JSONB
         ),
-        'awards', COALESCE(a.awards, '[]'::JSONB)
+        'awards', COALESCE(a.awards, '[]'::JSONB),
+        'contracts', COALESCE(c.contracts, '[]'::JSONB),
+        'currentContract', cc.current_contract
     ) AS payload
 FROM player_ids ids
 LEFT JOIN player_rows pr ON ids."playerId" = pr."playerId"
 LEFT JOIN player_positions pp ON ids."playerId" = pp."playerId"
 LEFT JOIN skater_stats ss ON ids."playerId" = ss."playerId"
 LEFT JOIN goalie_stats gs ON ids."playerId" = gs."playerId"
-LEFT JOIN awards a ON ids."playerId" = a."playerId";
+LEFT JOIN awards a ON ids."playerId" = a."playerId"
+LEFT JOIN contracts c ON ids."playerId" = c."playerId"
+LEFT JOIN current_contracts cc ON ids."playerId" = cc."playerId";
 
 CREATE OR REPLACE VIEW readmodel.s3_team_payloads AS
 WITH teams AS (
@@ -90,20 +127,34 @@ team_records AS (
             ORDER BY ts."seasonId" DESC
         ) AS team_records
     FROM readmodel.team_seasons ts
-    WHERE ts.season_rank <= 8
+    -- WHERE ts.season_rank <= 8
     GROUP BY ts."teamId"
 ),
 skaters AS (
     SELECT
         id,
-        JSONB_AGG(TO_JSONB(s) ORDER BY s.season DESC, s."fullName") AS skaters
+        JSONB_AGG(
+            TO_JSONB(s) || JSONB_BUILD_OBJECT(
+                'birthdate', s."birthDate",
+                'birthcountry', s."birthCountry",
+                'age', s.age
+            )
+            ORDER BY s.season DESC, s."fullName"
+        ) AS skaters
     FROM readmodel.team_skaters s
     GROUP BY id
 ),
 goalies AS (
     SELECT
         id,
-        JSONB_AGG(TO_JSONB(g) ORDER BY g.season DESC, g."fullName") AS goalies
+        JSONB_AGG(
+            TO_JSONB(g) || JSONB_BUILD_OBJECT(
+                'birthdate', g."birthDate",
+                'birthcountry', g."birthCountry",
+                'age', g.age
+            )
+            ORDER BY g.season DESC, g."fullName"
+        ) AS goalies
     FROM readmodel.team_goalies g
     GROUP BY id
 ),
@@ -176,6 +227,109 @@ SELECT
 FROM readmodel.draft_picks dp
 GROUP BY "draftYear";
 
+CREATE OR REPLACE VIEW readmodel.s3_contract_payloads AS
+SELECT
+    CONCAT('contracts/players/', "playerId", '.json') AS s3_key,
+    JSONB_BUILD_OBJECT(
+        'playerId', "playerId",
+        'contracts',
+        JSONB_AGG(
+            TO_JSONB(pc) - 'playerId'
+            ORDER BY pc.start_season DESC NULLS LAST, pc.end_season DESC NULLS LAST
+        )
+    ) AS payload
+FROM readmodel.player_contracts pc
+GROUP BY "playerId";
+
+CREATE OR REPLACE VIEW readmodel.s3_team_contract_payloads AS
+WITH roster_players AS (
+    SELECT DISTINCT
+        id AS team_id,
+        season,
+        "playerId",
+        "fullName",
+        "positionCode"
+    FROM readmodel.team_skaters
+    WHERE season >= '20052006'
+
+    UNION
+
+    SELECT DISTINCT
+        id AS team_id,
+        season,
+        "playerId",
+        "fullName",
+        'G' AS "positionCode"
+    FROM readmodel.team_goalies
+    WHERE season >= '20052006'
+),
+contract_seasons AS (
+    SELECT
+        rp.team_id,
+        rp.season,
+        rp."playerId",
+        rp."fullName",
+        rp."positionCode",
+        pc.contract_id,
+        TO_JSONB(pc) - 'playerId' - 'seasons' AS contract,
+        season_row.season_payload
+    FROM roster_players rp
+    JOIN readmodel.player_contracts pc
+      ON pc."playerId" = rp."playerId"
+    CROSS JOIN LATERAL JSONB_ARRAY_ELEMENTS(
+        COALESCE((TO_JSONB(pc) -> 'seasons'), '[]'::JSONB)
+    ) AS season_row(season_payload)
+    WHERE season_row.season_payload ->> 'season' = rp.season::TEXT
+),
+player_contracts AS (
+    SELECT
+        team_id,
+        season,
+        "playerId",
+        "fullName",
+        "positionCode",
+        JSONB_AGG(
+            contract || JSONB_BUILD_OBJECT(
+                'seasons',
+                JSONB_BUILD_ARRAY(season_payload)
+            )
+            ORDER BY
+                contract ->> 'start_season' DESC NULLS LAST,
+                contract ->> 'end_season' DESC NULLS LAST,
+                contract_id
+        ) AS contracts
+    FROM contract_seasons
+    GROUP BY
+        team_id,
+        season,
+        "playerId",
+        "fullName",
+        "positionCode"
+)
+SELECT
+    CONCAT('contracts/teams/', team_id, '/', season, '.json') AS s3_key,
+    JSONB_BUILD_OBJECT(
+        'teamId', team_id,
+        'season', season,
+        'teamContracts',
+        COALESCE(
+            JSONB_AGG(
+                JSONB_BUILD_OBJECT(
+                    'playerId', "playerId",
+                    'fullName', "fullName",
+                    'positionCode', "positionCode",
+                    'rosterSeasons', JSONB_BUILD_ARRAY(season),
+                    'currentContract', NULL,
+                    'contracts', contracts
+                )
+                ORDER BY "fullName"
+            ),
+            '[]'::JSONB
+        )
+    ) AS payload
+FROM player_contracts
+GROUP BY team_id, season;
+
 CREATE OR REPLACE VIEW readmodel.s3_index_payloads AS
 WITH teams_payload AS (
     SELECT
@@ -203,6 +357,15 @@ player_ids_payload AS (
             COALESCE(JSONB_AGG(TO_JSONB(p) ORDER BY p."playerId"), '[]'::JSONB)
         ) AS payload
     FROM readmodel.player_ids p
+),
+contract_player_ids_payload AS (
+    SELECT
+        'indexes/contract-player-ids.json' AS s3_key,
+        JSONB_BUILD_OBJECT(
+            'playerIds',
+            COALESCE(JSONB_AGG(DISTINCT "playerId" ORDER BY "playerId"), '[]'::JSONB)
+        ) AS payload
+    FROM readmodel.player_contracts
 ),
 draft_years_payload AS (
     SELECT
@@ -285,6 +448,8 @@ UNION ALL
 SELECT s3_key, payload FROM team_ids_payload
 UNION ALL
 SELECT s3_key, payload FROM player_ids_payload
+UNION ALL
+SELECT s3_key, payload FROM contract_player_ids_payload
 UNION ALL
 SELECT s3_key, payload FROM draft_years_payload
 UNION ALL
@@ -395,6 +560,10 @@ UNION ALL
 SELECT s3_key, payload FROM readmodel.s3_season_payloads
 UNION ALL
 SELECT s3_key, payload FROM readmodel.s3_draft_payloads
+UNION ALL
+SELECT s3_key, payload FROM readmodel.s3_contract_payloads
+UNION ALL
+SELECT s3_key, payload FROM readmodel.s3_team_contract_payloads
 UNION ALL
 SELECT s3_key, payload FROM readmodel.s3_index_payloads
 UNION ALL

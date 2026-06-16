@@ -53,6 +53,38 @@ GROUP BY
     d."ordinalPick";
 
 CREATE OR REPLACE VIEW readmodel.player_skater_stats AS
+WITH unique_players AS (
+    SELECT DISTINCT ON (p."playerId")
+        p."playerId",
+        p."birthDate",
+        p."birthCountry"
+    FROM newapi.players p
+    ORDER BY
+        p."playerId",
+        p."isActive" DESC NULLS LAST,
+        p."birthCountry" ASC NULLS LAST
+),
+playoff_stats AS (
+    SELECT
+        ps."playerId",
+        ps."season",
+        ps."leagueAbbrev",
+        ps."teamName.default",
+        SUM(ps."gamesPlayed") AS "playoffGamesPlayed",
+        SUM(ps."goals") AS "playoffGoals",
+        SUM(ps."assists") AS "playoffAssists",
+        SUM(ps."points") AS "playoffPoints",
+        SUM(ps."pim") AS "playoffPenaltyMinutes",
+        SUM(ps."plusMinus")::DOUBLE PRECISION AS "playoffPlusMinus"
+    FROM newapi.season_skater ps
+    WHERE ps.is_active = true
+      AND ps."gameTypeId" = 3
+    GROUP BY
+        ps."playerId",
+        ps."season",
+        ps."leagueAbbrev",
+        ps."teamName.default"
+)
 SELECT
     s."playerId",
     s."season",
@@ -64,13 +96,74 @@ SELECT
     s."pim" AS "stat.pim",
     s."plusMinus" AS "stat.plusMinus",
     s."points" AS "stat.points",
-    s."assists" AS "stat.assists"
+    s."assists" AS "stat.assists",
+    TO_CHAR(p."birthDate", 'YYYY-MM-DD') AS "birthDate",
+    p."birthCountry",
+    CASE
+        WHEN p."birthDate" IS NULL OR s."season" IS NULL THEN NULL
+        ELSE DATE_PART(
+            'year',
+            AGE(
+                TO_DATE(SUBSTRING(s."season"::TEXT, 5, 4) || '-02-01', 'YYYY-MM-DD'),
+                p."birthDate"
+            )
+        )::INTEGER
+    END AS age,
+    COALESCE(ps."playoffGamesPlayed", 0) AS "playoffGamesPlayed",
+    COALESCE(ps."playoffGoals", 0) AS "playoffGoals",
+    COALESCE(ps."playoffAssists", 0) AS "playoffAssists",
+    COALESCE(ps."playoffPoints", 0) AS "playoffPoints",
+    COALESCE(ps."playoffPenaltyMinutes", 0) AS "playoffPenaltyMinutes",
+    COALESCE(ps."playoffPlusMinus", 0)::DOUBLE PRECISION AS "playoffPlusMinus"
 FROM newapi.season_skater s
 LEFT JOIN newapi.teams t ON s."teamName.default" = t."fullName"
+LEFT JOIN unique_players p ON s."playerId" = p."playerId"
+LEFT JOIN playoff_stats ps
+    ON ps."playerId" = s."playerId"
+   AND ps."season" = s."season"
+   AND ps."leagueAbbrev" = s."leagueAbbrev"
+   AND ps."teamName.default" = s."teamName.default"
 WHERE s.is_active = true
   AND s."gameTypeId" = 2;
 
 CREATE OR REPLACE VIEW readmodel.player_goalie_stats AS
+WITH unique_players AS (
+    SELECT DISTINCT ON (p."playerId")
+        p."playerId",
+        p."birthDate",
+        p."birthCountry"
+    FROM newapi.players p
+    ORDER BY
+        p."playerId",
+        p."isActive" DESC NULLS LAST,
+        p."birthCountry" ASC NULLS LAST
+),
+playoff_stats AS (
+    SELECT
+        pg."playerId",
+        pg."season",
+        pg."leagueAbbrev",
+        pg."teamName.default",
+        SUM(pg."gamesPlayed")::NUMERIC AS "playoffGamesPlayed",
+        SUM(pg."goals")::NUMERIC AS "playoffGoals",
+        SUM(pg."assists")::NUMERIC AS "playoffAssists",
+        SUM(pg."goals" + pg."assists")::NUMERIC AS "playoffPoints",
+        SUM(pg."wins")::NUMERIC AS "playoffWins",
+        SUM(pg."losses")::NUMERIC AS "playoffLosses",
+        SUM(pg."goalsAgainstAvg" * pg."gamesPlayed")
+            / NULLIF(SUM(pg."gamesPlayed"), 0) AS "playoffGoalsAgainstAverage",
+        SUM(pg."savePctg" * pg."gamesPlayed")
+            / NULLIF(SUM(pg."gamesPlayed"), 0) AS "playoffSavePercentage",
+        SUM(pg."pim")::NUMERIC AS "playoffPenaltyMinutes"
+    FROM newapi.season_goalie pg
+    WHERE pg.is_active = true
+      AND pg."gameTypeId" = 3
+    GROUP BY
+        pg."playerId",
+        pg."season",
+        pg."leagueAbbrev",
+        pg."teamName.default"
+)
 SELECT
     g."playerId",
     g."season",
@@ -86,9 +179,36 @@ SELECT
     g."shutouts" AS "stat.shutouts",
     g."pim" AS "stat.pim",
     g."otLosses" AS "stat.otl",
-    g."assists" AS "stat.assists"
+    g."assists" AS "stat.assists",
+    TO_CHAR(p."birthDate", 'YYYY-MM-DD') AS "birthDate",
+    p."birthCountry",
+    CASE
+        WHEN p."birthDate" IS NULL OR g."season" IS NULL THEN NULL
+        ELSE DATE_PART(
+            'year',
+            AGE(
+                TO_DATE(SUBSTRING(g."season"::TEXT, 5, 4) || '-02-01', 'YYYY-MM-DD'),
+                p."birthDate"
+            )
+        )::INTEGER
+    END AS age,
+    COALESCE(pg."playoffGamesPlayed", 0) AS "playoffGamesPlayed",
+    COALESCE(pg."playoffGoals", 0) AS "playoffGoals",
+    COALESCE(pg."playoffAssists", 0) AS "playoffAssists",
+    COALESCE(pg."playoffPoints", 0) AS "playoffPoints",
+    COALESCE(pg."playoffWins", 0) AS "playoffWins",
+    COALESCE(pg."playoffLosses", 0) AS "playoffLosses",
+    pg."playoffGoalsAgainstAverage",
+    pg."playoffSavePercentage",
+    COALESCE(pg."playoffPenaltyMinutes", 0) AS "playoffPenaltyMinutes"
 FROM newapi.season_goalie g
 LEFT JOIN newapi.teams t ON g."teamName.default" = t."fullName"
+LEFT JOIN unique_players p ON g."playerId" = p."playerId"
+LEFT JOIN playoff_stats pg
+    ON pg."playerId" = g."playerId"
+   AND pg."season" = g."season"
+   AND pg."leagueAbbrev" = g."leagueAbbrev"
+   AND pg."teamName.default" = g."teamName.default"
 WHERE g.is_active = true
   AND g."gameTypeId" = 2;
 
@@ -155,6 +275,8 @@ WITH unique_players AS (
         p."playerId",
         p."firstName",
         p."lastName",
+        p."birthDate",
+        p."birthCountry",
         p."position"
     FROM newapi.players p
     ORDER BY
@@ -181,7 +303,19 @@ combined_data AS (
         SUM(CASE WHEN s."gameTypeId" = 3 THEN s."pim" ELSE 0 END) AS "playoffPenaltyMinutes",
         SUM(CASE WHEN s."gameTypeId" = 2 THEN s."plusMinus" ELSE 0 END)::DOUBLE PRECISION AS "plusMinus",
         SUM(CASE WHEN s."gameTypeId" = 3 THEN s."plusMinus" ELSE 0 END)::DOUBLE PRECISION AS "playoffPlusMinus",
-        p."position" AS "positionCode"
+        p."position" AS "positionCode",
+        TO_CHAR(p."birthDate", 'YYYY-MM-DD') AS "birthDate",
+        p."birthCountry",
+        CASE
+            WHEN p."birthDate" IS NULL OR s.season IS NULL THEN NULL
+            ELSE DATE_PART(
+                'year',
+                AGE(
+                    TO_DATE(SUBSTRING(s.season::TEXT, 5, 4) || '-02-01', 'YYYY-MM-DD'),
+                    p."birthDate"
+                )
+            )::INTEGER
+        END AS age
     FROM newapi.season_skater s
     JOIN newapi.teams t ON s."teamName.default" = t."fullName"
     LEFT JOIN unique_players p ON s."playerId" = p."playerId"
@@ -194,6 +328,9 @@ combined_data AS (
         s.season,
         t."rawTricode",
         CONCAT(p."firstName", ' ', p."lastName"),
+        TO_CHAR(p."birthDate", 'YYYY-MM-DD'),
+        p."birthCountry",
+        p."birthDate",
         p."position"
 )
 SELECT DISTINCT
@@ -214,7 +351,10 @@ SELECT DISTINCT
     "playoffPenaltyMinutes",
     "plusMinus",
     "playoffPlusMinus",
-    "positionCode"
+    "positionCode",
+    "birthDate",
+    "birthCountry",
+    age
 FROM combined_data;
 
 CREATE OR REPLACE VIEW readmodel.team_goalies AS
@@ -222,7 +362,9 @@ WITH unique_players AS (
     SELECT DISTINCT ON (p."playerId")
         p."playerId",
         p."firstName",
-        p."lastName"
+        p."lastName",
+        p."birthDate",
+        p."birthCountry"
     FROM newapi.players p
     ORDER BY
         p."playerId",
@@ -257,7 +399,19 @@ combined_goalie_data AS (
         SUM(CASE WHEN g."gameTypeId" = 3 THEN g."savePctg" * g."gamesPlayed" ELSE 0 END)
             / NULLIF(SUM(CASE WHEN g."gameTypeId" = 3 THEN g."gamesPlayed" ELSE 0 END), 0) AS "playoffSavePercentage",
         SUM(CASE WHEN g."gameTypeId" = 2 THEN g."pim" ELSE 0 END)::NUMERIC AS "penaltyMinutes",
-        SUM(CASE WHEN g."gameTypeId" = 3 THEN g."pim" ELSE 0 END)::NUMERIC AS "playoffPenaltyMinutes"
+        SUM(CASE WHEN g."gameTypeId" = 3 THEN g."pim" ELSE 0 END)::NUMERIC AS "playoffPenaltyMinutes",
+        TO_CHAR(p."birthDate", 'YYYY-MM-DD') AS "birthDate",
+        p."birthCountry",
+        CASE
+            WHEN p."birthDate" IS NULL OR g.season IS NULL THEN NULL
+            ELSE DATE_PART(
+                'year',
+                AGE(
+                    TO_DATE(SUBSTRING(g.season::TEXT, 5, 4) || '-02-01', 'YYYY-MM-DD'),
+                    p."birthDate"
+                )
+            )::INTEGER
+        END AS age
     FROM newapi.season_goalie g
     JOIN newapi.teams t ON g."teamName.default" = t."fullName"
     LEFT JOIN unique_players p ON g."playerId" = p."playerId"
@@ -269,7 +423,10 @@ combined_goalie_data AS (
         g."playerId",
         g.season,
         t."rawTricode",
-        CONCAT(p."firstName", ' ', p."lastName")
+        CONCAT(p."firstName", ' ', p."lastName"),
+        TO_CHAR(p."birthDate", 'YYYY-MM-DD'),
+        p."birthCountry",
+        p."birthDate"
 )
 SELECT DISTINCT
     id,
@@ -294,7 +451,10 @@ SELECT DISTINCT
     "savePercentage",
     "playoffSavePercentage",
     "penaltyMinutes",
-    "playoffPenaltyMinutes"
+    "playoffPenaltyMinutes",
+    "birthDate",
+    "birthCountry",
+    age
 FROM combined_goalie_data;
 
 CREATE OR REPLACE VIEW readmodel.team_playoff_years AS
