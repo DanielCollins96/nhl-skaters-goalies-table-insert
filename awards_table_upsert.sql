@@ -21,14 +21,8 @@ CREATE TABLE IF NOT EXISTS newapi.awards (
     UNIQUE ("playerId", trophy_default, "seasonId")
 );
 
-ALTER TABLE newapi.awards
-    ALTER COLUMN "seasonId" TYPE BIGINT USING "seasonId"::BIGINT,
-    ALTER COLUMN "gamesPlayed" TYPE DOUBLE PRECISION USING "gamesPlayed"::DOUBLE PRECISION,
-    ALTER COLUMN goals TYPE DOUBLE PRECISION USING goals::DOUBLE PRECISION,
-    ALTER COLUMN assists TYPE DOUBLE PRECISION USING assists::DOUBLE PRECISION,
-    ALTER COLUMN points TYPE DOUBLE PRECISION USING points::DOUBLE PRECISION,
-    ALTER COLUMN "plusMinus" TYPE DOUBLE PRECISION USING "plusMinus"::DOUBLE PRECISION,
-    ALTER COLUMN pim TYPE DOUBLE PRECISION USING pim::DOUBLE PRECISION;
+-- Do not ALTER existing award columns here. CREATE TABLE above already uses
+-- these types, and ALTER TYPE fails when readmodel.player_awards depends on them.
 
 CREATE INDEX IF NOT EXISTS idx_awards_player_id
     ON newapi.awards ("playerId");
