@@ -204,7 +204,16 @@ psql "$DATABASE_URL" -f readmodel_views.sql
 psql "$DATABASE_URL" -f readmodel_s3_export_views.sql
 ```
 
-`readmodel_views.sql` creates the row-level views used by the Next.js API fallback queries. `readmodel_s3_export_views.sql` creates endpoint-shaped S3 payloads in `readmodel.s3_objects`, including player contracts and selected-season team contract payloads:
+`awards_table_upsert.sql` creates `newapi.awards`, its ETL log, the
+`upsert_awards_from_staging_with_logging()` function, and the
+`sync_awards_from_staging()` procedure. Run it before the readmodel scripts,
+then load awards with:
+
+```sql
+CALL sync_awards_from_staging();
+```
+
+`readmodel_views.sql` creates the row-level views used by the Next.js API fallback queries, including `readmodel.player_awards`. `readmodel_s3_export_views.sql` includes those awards in each player's `awards` payload and creates endpoint-shaped S3 payloads in `readmodel.s3_objects`, including player contracts and selected-season team contract payloads:
 
 ```text
 contracts/players/{player_id}.json
@@ -216,5 +225,4 @@ This script uses my schema naming convention of `staging1.<players/skaters/goali
 
 Todo:
 
-- Awards
 - Standings
