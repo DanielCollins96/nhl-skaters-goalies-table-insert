@@ -195,6 +195,15 @@ players AS (
         season,
         JSONB_AGG(TO_JSONB(p) ORDER BY p.row_number ASC) AS players
     FROM readmodel.season_point_leaders p
+    WHERE p."gameTypeId" = 2
+    GROUP BY season
+),
+playoff_players AS (
+    SELECT
+        season,
+        JSONB_AGG(TO_JSONB(p) ORDER BY p.row_number ASC) AS players
+    FROM readmodel.season_point_leaders p
+    WHERE p."gameTypeId" = 3
     GROUP BY season
 ),
 goalies AS (
@@ -202,20 +211,51 @@ goalies AS (
         season,
         JSONB_AGG(TO_JSONB(g) ORDER BY g.row_number ASC) AS goalies
     FROM readmodel.season_goalie_leaders g
+    WHERE g."gameTypeId" = 2
     GROUP BY season
+),
+playoff_goalies AS (
+    SELECT
+        season,
+        JSONB_AGG(TO_JSONB(g) ORDER BY g.row_number ASC) AS goalies
+    FROM readmodel.season_goalie_leaders g
+    WHERE g."gameTypeId" = 3
+    GROUP BY season
+),
+season_awards AS (
+    SELECT
+        a."seasonId" AS season,
+        JSONB_AGG(
+            JSONB_BUILD_OBJECT(
+                'trophy_default', a.trophy_default,
+                'seasonId', a."seasonId",
+                'playerId', a."playerId",
+                'player_name', p.player_name
+            )
+            ORDER BY a.trophy_default, p.player_name
+        ) AS awards
+    FROM readmodel.player_awards a
+    LEFT JOIN readmodel.players p ON p."playerId" = a."playerId"
+    GROUP BY a."seasonId"
 )
 SELECT
     CONCAT('seasons/', s.season, '.json') AS s3_key,
     JSONB_BUILD_OBJECT(
         'season', s.season,
         'players', COALESCE(p.players, '[]'::JSONB),
+        'playoffPlayers', COALESCE(pp.players, '[]'::JSONB),
         'goalies', COALESCE(g.goalies, '[]'::JSONB),
+        'playoffGoalies', COALESCE(pg.goalies, '[]'::JSONB),
+        'awards', COALESCE(sa.awards, '[]'::JSONB),
         'availableSeasons', COALESCE(a.seasons, '[]'::JSONB)
     ) AS payload
 FROM seasons s
 CROSS JOIN available a
 LEFT JOIN players p ON s.season = p.season
-LEFT JOIN goalies g ON s.season = g.season;
+LEFT JOIN playoff_players pp ON s.season = pp.season
+LEFT JOIN goalies g ON s.season = g.season
+LEFT JOIN playoff_goalies pg ON s.season = pg.season
+LEFT JOIN season_awards sa ON s.season = sa.season;
 
 CREATE OR REPLACE VIEW readmodel.s3_draft_payloads AS
 SELECT

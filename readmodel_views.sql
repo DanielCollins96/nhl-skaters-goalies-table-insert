@@ -505,6 +505,7 @@ WITH skater_totals AS (
     SELECT
         s."playerId",
         s.season,
+        s."gameTypeId",
         SUM(s.goals) AS goals,
         SUM(s."gamesPlayed") AS "gamesPlayed",
         SUM(s.assists) AS assists,
@@ -513,12 +514,14 @@ WITH skater_totals AS (
     FROM newapi.season_skater s
     WHERE s."leagueAbbrev" = 'NHL'
       AND s.is_active = true
-    GROUP BY s."playerId", s.season
+      AND s."gameTypeId" IN (2, 3)
+    GROUP BY s."playerId", s.season, s."gameTypeId"
 ),
 goalie_totals AS (
     SELECT
         g."playerId",
         g.season,
+        g."gameTypeId",
         SUM(g.goals) AS goals,
         SUM(g."gamesPlayed") AS "gamesPlayed",
         SUM(g.assists) AS assists,
@@ -526,40 +529,54 @@ goalie_totals AS (
     FROM newapi.season_goalie g
     WHERE g."leagueAbbrev" = 'NHL'
       AND g.is_active = true
-    GROUP BY g."playerId", g.season
+      AND g."gameTypeId" IN (2, 3)
+    GROUP BY g."playerId", g.season, g."gameTypeId"
+),
+combined AS (
+    SELECT
+        COALESCE(s."playerId", g."playerId") AS "playerId",
+        COALESCE(s.season, g.season) AS season,
+        COALESCE(s."gameTypeId", g."gameTypeId") AS "gameTypeId",
+        COALESCE(s.goals, g.goals, 0) AS goals,
+        COALESCE(s."gamesPlayed", g."gamesPlayed", 0) AS "gamesPlayed",
+        COALESCE(s.assists, g.assists, 0) AS assists,
+        COALESCE(s.points, (g.goals + g.assists), 0) AS points,
+        COALESCE(s."teamName", g."teamName") AS "teamName"
+    FROM skater_totals s
+    FULL OUTER JOIN goalie_totals g
+      ON s."playerId" = g."playerId"
+     AND s.season = g.season
+     AND s."gameTypeId" = g."gameTypeId"
 ),
 leader_rows AS (
     SELECT
         ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(s.season, g.season)
+            PARTITION BY c.season, c."gameTypeId"
             ORDER BY
-                COALESCE(s.points, (g.goals + g.assists), 0) DESC NULLS LAST,
-                COALESCE(s.goals, g.goals, 0) DESC NULLS LAST
+                c.points DESC NULLS LAST,
+                c.goals DESC NULLS LAST
         ) AS row_number,
         CONCAT(p."firstName", ' ', p."lastName") AS player_name,
         p."playerId",
         p."position",
-        COALESCE(s.season, g.season) AS season,
-        COALESCE(s."teamName", g."teamName") AS "team.name",
-        COALESCE(s.goals, g.goals, 0) AS "stat.goals",
-        COALESCE(s."gamesPlayed", g."gamesPlayed", 0) AS "stat.games",
-        COALESCE(s.assists, g.assists, 0) AS "stat.assists",
-        COALESCE(s.points, (g.goals + g.assists), 0) AS "stat.points",
-        COALESCE(ts.id, tg.id) AS "team.id"
-    FROM (
+        c.season,
+        c."gameTypeId",
+        c."teamName" AS "team.name",
+        c.goals AS "stat.goals",
+        c."gamesPlayed" AS "stat.games",
+        c.assists AS "stat.assists",
+        c.points AS "stat.points",
+        t.id AS "team.id"
+    FROM combined c
+    JOIN (
         SELECT DISTINCT ON ("playerId")
             "playerId",
             "firstName",
             "lastName",
             "position"
         FROM newapi.players
-    ) p
-    LEFT JOIN skater_totals s ON p."playerId" = s."playerId"
-    LEFT JOIN goalie_totals g ON p."playerId" = g."playerId"
-    LEFT JOIN newapi.teams ts ON ts."fullName" = s."teamName" AND ts.active = true
-    LEFT JOIN newapi.teams tg ON tg."fullName" = g."teamName" AND tg.active = true
-    WHERE s."playerId" IS NOT NULL
-       OR g."playerId" IS NOT NULL
+    ) p ON p."playerId" = c."playerId"
+    LEFT JOIN newapi.teams t ON t."fullName" = c."teamName" AND t.active = true
 )
 SELECT *
 FROM leader_rows
@@ -570,6 +587,7 @@ WITH goalie_totals AS (
     SELECT
         g."playerId",
         g.season,
+        g."gameTypeId",
         SUM(g."gamesPlayed") AS "gamesPlayed",
         SUM(g.wins) AS wins,
         SUM(g.losses) AS losses,
@@ -581,17 +599,19 @@ WITH goalie_totals AS (
     FROM newapi.season_goalie g
     WHERE g."leagueAbbrev" = 'NHL'
       AND g.is_active = true
-    GROUP BY g."playerId", g.season
+      AND g."gameTypeId" IN (2, 3)
+    GROUP BY g."playerId", g.season, g."gameTypeId"
 ),
 leader_rows AS (
     SELECT
         ROW_NUMBER() OVER (
-            PARTITION BY g.season
+            PARTITION BY g.season, g."gameTypeId"
             ORDER BY g.wins DESC NULLS LAST, g."savePctg" DESC NULLS LAST
         ) AS row_number,
         CONCAT(p."firstName", ' ', p."lastName") AS player_name,
         p."playerId",
         g.season,
+        g."gameTypeId",
         g."teamName" AS "team.name",
         g."gamesPlayed" AS "stat.games",
         g.wins AS "stat.wins",

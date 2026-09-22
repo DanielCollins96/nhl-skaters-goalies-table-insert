@@ -66,14 +66,21 @@ DECLARE
 BEGIN
     start_time := CURRENT_TIMESTAMP;
 
-    IF to_regclass('staging1.award') IS NULL THEN
+    IF to_regclass('staging1.award') IS NULL
+       OR NOT EXISTS (
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'staging1'
+              AND table_name = 'award'
+              AND column_name = 'playerId'
+       ) THEN
         end_time := CURRENT_TIMESTAMP;
         duration := end_time - start_time;
 
         INSERT INTO newapi.awards_etl_log (
             total_processed, inserted_records, updated_records, unchanged_records, run_duration, notes
         ) VALUES (
-            0, 0, 0, 0, duration, 'staging1.award did not exist'
+            0, 0, 0, 0, duration, 'staging1.award did not exist or had no playerId column'
         );
 
         RETURN QUERY SELECT 0::INTEGER, 0::INTEGER, 0::INTEGER, 0::INTEGER, duration;
