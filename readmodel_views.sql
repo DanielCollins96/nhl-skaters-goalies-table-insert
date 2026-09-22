@@ -560,13 +560,13 @@ leader_rows AS (
         p."playerId",
         p."position",
         c.season,
-        c."gameTypeId",
         c."teamName" AS "team.name",
         c.goals AS "stat.goals",
         c."gamesPlayed" AS "stat.games",
         c.assists AS "stat.assists",
         c.points AS "stat.points",
-        t.id AS "team.id"
+        t.id AS "team.id",
+        c."gameTypeId"
     FROM combined c
     JOIN (
         SELECT DISTINCT ON ("playerId")
@@ -578,7 +578,19 @@ leader_rows AS (
     ) p ON p."playerId" = c."playerId"
     LEFT JOIN newapi.teams t ON t."fullName" = c."teamName" AND t.active = true
 )
-SELECT *
+SELECT
+    row_number,
+    player_name,
+    "playerId",
+    "position",
+    season,
+    "team.name",
+    "stat.goals",
+    "stat.games",
+    "stat.assists",
+    "stat.points",
+    "team.id",
+    "gameTypeId"
 FROM leader_rows
 WHERE row_number <= 200;
 
@@ -611,7 +623,6 @@ leader_rows AS (
         CONCAT(p."firstName", ' ', p."lastName") AS player_name,
         p."playerId",
         g.season,
-        g."gameTypeId",
         g."teamName" AS "team.name",
         g."gamesPlayed" AS "stat.games",
         g.wins AS "stat.wins",
@@ -620,7 +631,8 @@ leader_rows AS (
         g."goalsAgainstAvg" AS "stat.gaa",
         g."savePctg" AS "stat.savePct",
         g.shutouts AS "stat.shutouts",
-        t.id AS "team.id"
+        t.id AS "team.id",
+        g."gameTypeId"
     FROM (
         SELECT DISTINCT ON ("playerId")
             "playerId",
@@ -631,7 +643,21 @@ leader_rows AS (
     JOIN goalie_totals g ON p."playerId" = g."playerId"
     LEFT JOIN newapi.teams t ON t."fullName" = g."teamName" AND t.active = true
 )
-SELECT *
+SELECT
+    row_number,
+    player_name,
+    "playerId",
+    season,
+    "team.name",
+    "stat.games",
+    "stat.wins",
+    "stat.losses",
+    "stat.otl",
+    "stat.gaa",
+    "stat.savePct",
+    "stat.shutouts",
+    "team.id",
+    "gameTypeId"
 FROM leader_rows
 WHERE row_number <= 100;
 
