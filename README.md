@@ -2,14 +2,17 @@
 
 These scripts mix **one-time table bootstrap** with **safe-to-rerun** `CREATE OR REPLACE` functions/procedures.
 
-- **(b) Live re-apply** (cast fixes, sync logic, `ALTER TABLE … ADD COLUMN IF NOT EXISTS`): run the matching `*_upsert.sql` / `player_contracts.sql` file. Those files do **not** `DROP TABLE`. You can apply the whole file; you do not need to skip a DROP block.
 - **(a) First-time / wipe only**: files under `bootstrap/`. They `DROP TABLE … CASCADE` and will erase production data. They refuse to run unless you opt in in the same session:
 
 ```sql
 SET app.allow_bootstrap = 'on';
 ```
 
-Never run `bootstrap/` against populated production. Details and the table inventory are in `bootstrap/README.md`.
+Never run `bootstrap/` against populated production.
+
+- **(b) Live re-apply** (cast fixes, sync logic, `ALTER TABLE … ADD COLUMN IF NOT EXISTS`): run the matching `*_upsert.sql` / `player_contracts.sql` file. Those files do **not** `DROP TABLE`. You can apply the whole file; you do not need to skip a DROP block.
+
+Details and the table inventory are in `bootstrap/README.md`.
 
 ## players-table-insert
 
