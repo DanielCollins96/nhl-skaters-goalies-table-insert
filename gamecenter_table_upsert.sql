@@ -1,25 +1,15 @@
--- Ensure expected schemas exist and provide a helper to reset the gamecenter objects.
+-- SAFE TO RE-RUN against populated production (live RDS).
+-- This file never DROPs production tables. Schema uses CREATE TABLE IF NOT EXISTS
+-- and CREATE INDEX IF NOT EXISTS; routines use CREATE OR REPLACE.
+-- Greenfield wipe/recreate: bootstrap/gamecenter_table_bootstrap.sql
+-- (requires SET app.allow_bootstrap = 'on' in the same session).
+-- The old newapi.reset_gamecenter_schema(true) helper lived here; it is gone
+-- so a default-run of this file cannot wipe gamecenter.
+
 CREATE SCHEMA IF NOT EXISTS staging1;
 CREATE SCHEMA IF NOT EXISTS newapi;
 
--- Helper: optionally drop existing gamecenter objects and let this script recreate them.
-CREATE OR REPLACE FUNCTION newapi.reset_gamecenter_schema(recreate BOOLEAN DEFAULT FALSE)
-RETURNS VOID AS $$
-BEGIN
-    IF recreate THEN
-        DROP VIEW IF EXISTS newapi.gamecenter_player_points CASCADE;
-        DROP VIEW IF EXISTS newapi.gamecenter_goals CASCADE;
-        DROP VIEW IF EXISTS newapi.gamecenter_etl_summary CASCADE;
-        DROP TABLE IF EXISTS newapi.gamecenter_etl_log CASCADE;
-        DROP TABLE IF EXISTS newapi.gamecenter CASCADE;
-    END IF;
-    -- Ensure schemas exist
-    PERFORM 1;
-END;
-$$ LANGUAGE plpgsql;
-
 -- Drop existing functions/procs to avoid return-type conflicts.
--- Do not drop gamecenter tables here; this script is safe to rerun against loaded data.
 DROP FUNCTION IF EXISTS upsert_gamecenter_from_staging_with_logging() CASCADE;
 DROP PROCEDURE IF EXISTS sync_gamecenter_from_staging() CASCADE;
 
