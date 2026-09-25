@@ -1,3 +1,11 @@
+-- SAFE TO RE-RUN against populated production (live RDS).
+-- This file never DROPs production tables. Schema uses CREATE TABLE IF NOT EXISTS
+-- and CREATE INDEX IF NOT EXISTS; routines use CREATE OR REPLACE.
+-- Greenfield wipe/recreate: bootstrap/season_goalie_table_bootstrap.sql
+-- (requires SET app.allow_bootstrap = 'on' in the same session).
+
+CREATE SCHEMA IF NOT EXISTS newapi;
+
 -- Drop existing functions first to avoid return type conflicts
 DROP FUNCTION IF EXISTS insert_season_goalies_from_staging() CASCADE;
 DROP FUNCTION IF EXISTS insert_season_goalies_from_staging_with_logging() CASCADE;
@@ -5,10 +13,8 @@ DROP FUNCTION IF EXISTS get_season_goalies_occurrence_stats() CASCADE;
 DROP FUNCTION IF EXISTS generate_season_goalie_data_hash(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) CASCADE;
 DROP PROCEDURE IF EXISTS sync_season_goalies_from_staging() CASCADE;
 
-DROP TABLE IF EXISTS newapi.season_goalie CASCADE;
-
 -- Create the production season_goalie table with occurrence tracking
-CREATE TABLE newapi.season_goalie (
+CREATE TABLE IF NOT EXISTS newapi.season_goalie (
     id SERIAL PRIMARY KEY,
     "playerId" BIGINT,
     "gameTypeId" BIGINT,
@@ -64,12 +70,12 @@ CREATE TABLE newapi.season_goalie (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_season_goalie_player_id ON newapi.season_goalie("playerId");
-CREATE INDEX idx_season_goalie_season ON newapi.season_goalie(season);
-CREATE INDEX idx_season_goalie_team ON newapi.season_goalie("teamName.default");
-CREATE INDEX idx_season_goalie_league ON newapi.season_goalie("leagueAbbrev");
-CREATE INDEX idx_season_goalie_occurrence ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
-CREATE INDEX idx_season_goalie_active ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_season_goalie_player_id ON newapi.season_goalie("playerId");
+CREATE INDEX IF NOT EXISTS idx_season_goalie_season ON newapi.season_goalie(season);
+CREATE INDEX IF NOT EXISTS idx_season_goalie_team ON newapi.season_goalie("teamName.default");
+CREATE INDEX IF NOT EXISTS idx_season_goalie_league ON newapi.season_goalie("leagueAbbrev");
+CREATE INDEX IF NOT EXISTS idx_season_goalie_occurrence ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
+CREATE INDEX IF NOT EXISTS idx_season_goalie_active ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.season_goalie_etl_log (
@@ -175,11 +181,18 @@ BEGIN
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.sv" TEXT;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.fr" TEXT;
 
-    -- Loop through each record in staging
+    -- Loop through each record in staging.
+    -- Keys: NULLIF+TRIM then ::double precision::bigint so '' and '2024.0'
+    -- do not abort the batch. Skip rows whose required keys are unusable.
     FOR rec IN 
         SELECT 
-            "playerId", "gameTypeId", "gamesPlayed", "goalsAgainst", "goalsAgainstAvg",
-            "leagueAbbrev", losses, season, sequence, shutouts, ties, "timeOnIce",
+            NULLIF(TRIM("playerId"::text), '')::double precision::bigint AS "playerId",
+            NULLIF(TRIM("gameTypeId"::text), '')::double precision::bigint AS "gameTypeId",
+            "gamesPlayed", "goalsAgainst", "goalsAgainstAvg",
+            "leagueAbbrev", losses,
+            NULLIF(TRIM(season::text), '')::double precision::bigint AS season,
+            NULLIF(TRIM(sequence::text), '')::double precision::bigint AS sequence,
+            shutouts, ties, "timeOnIce",
             wins, "teamName.default", assists, "gamesStarted", goals, pim, "savePctg",
             "shotsAgainst", "teamCommonName.default", "teamName.fr",
             "teamPlaceNameWithPreposition.default", "teamPlaceNameWithPreposition.fr",
@@ -190,24 +203,41 @@ BEGIN
             "teamPlaceNameWithPreposition.es", "teamPlaceNameWithPreposition.fi",
             "teamPlaceNameWithPreposition.sk", "teamPlaceNameWithPreposition.sv"
         FROM staging1.season_goalie
+        WHERE NULLIF(TRIM("playerId"::text), '') IS NOT NULL
+          AND NULLIF(TRIM("gameTypeId"::text), '') IS NOT NULL
+          AND NULLIF(TRIM(season::text), '') IS NOT NULL
+          AND NULLIF(TRIM(sequence::text), '') IS NOT NULL
     LOOP
-        -- Generate hash for the new data
+        -- Cast every arg to the installed hash signature. Call-up scrapes
+        -- rebuild staging1.season_goalie with mixed bigint/text/float types,
+        -- and Postgres will not resolve the function without explicit casts.
         new_hash := generate_season_goalie_data_hash(
-            rec."gamesPlayed", rec."goalsAgainst", rec."goalsAgainstAvg",
-            rec.losses, rec.shutouts, rec.ties, rec.wins,
-            rec.assists, rec."gamesStarted", rec.goals, rec.pim,
-            rec."savePctg", rec."shotsAgainst", rec."otLosses", rec."timeOnIce"
+            rec."gamesPlayed"::double precision,
+            rec."goalsAgainst"::double precision,
+            rec."goalsAgainstAvg"::double precision,
+            rec.losses::double precision,
+            rec.shutouts::double precision,
+            rec.ties::double precision,
+            rec.wins::double precision,
+            rec.assists::double precision,
+            rec."gamesStarted"::double precision,
+            rec.goals::double precision,
+            rec.pim::double precision,
+            rec."savePctg"::double precision,
+            rec."shotsAgainst"::double precision,
+            rec."otLosses"::double precision,
+            rec."timeOnIce"::text
         );
         
         found_match := FALSE;
         
         -- Check the active record for this player/season/sequence/team/gameType/league combination
         SELECT * INTO matching_record FROM newapi.season_goalie 
-        WHERE "playerId" = rec."playerId" 
-        AND season = rec.season 
+        WHERE "playerId" = rec."playerId"
+        AND season = rec.season
         AND sequence = rec.sequence
         AND "teamName.default" = rec."teamName.default"
-        AND "gameTypeId" = rec."gameTypeId" 
+        AND "gameTypeId" = rec."gameTypeId"
         AND "leagueAbbrev" = rec."leagueAbbrev"
         AND is_active = TRUE
         LIMIT 1;
@@ -238,11 +268,11 @@ BEGIN
             -- Get the next occurrence number for this combination
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
             FROM newapi.season_goalie 
-            WHERE "playerId" = rec."playerId" 
-            AND season = rec.season 
+            WHERE "playerId" = rec."playerId"
+            AND season = rec.season
             AND sequence = rec.sequence
             AND "teamName.default" = rec."teamName.default"
-            AND "gameTypeId" = rec."gameTypeId" 
+            AND "gameTypeId" = rec."gameTypeId"
             AND "leagueAbbrev" = rec."leagueAbbrev";
             
             -- Insert new record with the next occurrence number (active by default)
@@ -260,17 +290,23 @@ BEGIN
                 "teamPlaceNameWithPreposition.sk", "teamPlaceNameWithPreposition.sv",
                 occurrence_number, data_hash, is_active
             ) VALUES (
-                rec."playerId", rec."gameTypeId", rec."gamesPlayed", rec."goalsAgainst",
-                rec."goalsAgainstAvg", rec."leagueAbbrev", rec.losses, rec.season,
-                rec.sequence, rec.shutouts, rec.ties, rec."timeOnIce", rec.wins,
-                rec."teamName.default", rec.assists, rec."gamesStarted", rec.goals,
-                rec.pim, rec."savePctg", rec."shotsAgainst", rec."teamCommonName.default",
+                rec."playerId", rec."gameTypeId",
+                rec."gamesPlayed"::double precision, rec."goalsAgainst"::double precision,
+                rec."goalsAgainstAvg"::double precision, rec."leagueAbbrev",
+                rec.losses::double precision, rec.season, rec.sequence,
+                rec.shutouts::double precision, rec.ties::double precision,
+                rec."timeOnIce"::text, rec.wins::double precision,
+                rec."teamName.default", rec.assists::double precision,
+                rec."gamesStarted"::double precision, rec.goals::double precision,
+                rec.pim::double precision, rec."savePctg"::double precision,
+                rec."shotsAgainst"::double precision, rec."teamCommonName.default",
                 rec."teamName.fr", rec."teamPlaceNameWithPreposition.default",
                 rec."teamPlaceNameWithPreposition.fr", rec."teamCommonName.cs",
                 rec."teamCommonName.de", rec."teamCommonName.es", rec."teamCommonName.fi",
                 rec."teamCommonName.sk", rec."teamCommonName.sv", rec."teamName.cs",
                 rec."teamName.de", rec."teamName.fi", rec."teamName.sk", rec."teamName.sv",
-                rec."otLosses", rec."teamCommonName.fr", rec."teamPlaceNameWithPreposition.cs",
+                rec."otLosses"::double precision, rec."teamCommonName.fr",
+                rec."teamPlaceNameWithPreposition.cs",
                 rec."teamPlaceNameWithPreposition.es", rec."teamPlaceNameWithPreposition.fi",
                 rec."teamPlaceNameWithPreposition.sk", rec."teamPlaceNameWithPreposition.sv",
                 next_occurrence, new_hash, TRUE
@@ -405,5 +441,6 @@ SELECT
 FROM newapi.season_goalie_etl_log
 ORDER BY run_timestamp DESC;
 
--- Execute the sync AFTER you've loaded staging1.season_goalie with pandas to_sql
+-- Live RDS: this whole file is safe to re-apply. Do not run
+-- bootstrap/season_goalie_table_bootstrap.sql against populated production.
 -- CALL sync_season_goalies_from_staging();

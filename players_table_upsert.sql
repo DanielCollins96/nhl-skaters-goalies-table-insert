@@ -1,13 +1,19 @@
+-- SAFE TO RE-RUN against populated production (live RDS).
+-- This file never DROPs production tables. Schema uses CREATE TABLE IF NOT EXISTS
+-- and CREATE INDEX IF NOT EXISTS; routines use CREATE OR REPLACE.
+-- Greenfield wipe/recreate: bootstrap/players_table_bootstrap.sql
+-- (requires SET app.allow_bootstrap = 'on' in the same session).
+
+CREATE SCHEMA IF NOT EXISTS newapi;
+
 -- Drop existing functions first to avoid return type conflicts
 DROP FUNCTION IF EXISTS insert_players_from_staging() CASCADE;
 DROP FUNCTION IF EXISTS insert_players_from_staging_with_logging() CASCADE;
 DROP FUNCTION IF EXISTS generate_player_data_hash(BOOLEAN, DOUBLE PRECISION, TEXT, TEXT, DOUBLE PRECISION, TEXT, TEXT, TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, DOUBLE PRECISION, TEXT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) CASCADE;
 DROP PROCEDURE IF EXISTS sync_players_from_staging() CASCADE;
 
-DROP TABLE IF EXISTS newapi.players CASCADE;
-
 -- Create the production players table with occurrence tracking
-CREATE TABLE newapi.players (
+CREATE TABLE IF NOT EXISTS newapi.players (
     id SERIAL PRIMARY KEY,
     "playerId" BIGINT,
     "isActive" BOOLEAN,
@@ -48,9 +54,9 @@ CREATE TABLE newapi.players (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_players_player_id ON newapi.players("playerId");
-CREATE INDEX idx_players_current_team ON newapi.players("currentTeamAbbrev");
-CREATE INDEX idx_players_occurrence ON newapi.players("playerId", occurrence_number);
+CREATE INDEX IF NOT EXISTS idx_players_player_id ON newapi.players("playerId");
+CREATE INDEX IF NOT EXISTS idx_players_current_team ON newapi.players("currentTeamAbbrev");
+CREATE INDEX IF NOT EXISTS idx_players_occurrence ON newapi.players("playerId", occurrence_number);
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.players_etl_log (

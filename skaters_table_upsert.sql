@@ -1,12 +1,19 @@
+-- SAFE TO RE-RUN against populated production (live RDS).
+-- This file never DROPs production tables. Schema uses CREATE TABLE IF NOT EXISTS
+-- and CREATE INDEX IF NOT EXISTS; routines use CREATE OR REPLACE.
+-- Greenfield wipe/recreate: bootstrap/skaters_table_bootstrap.sql
+-- (requires SET app.allow_bootstrap = 'on' in the same session).
+
+CREATE SCHEMA IF NOT EXISTS newapi;
+
 -- Drop existing functions first to avoid return type conflicts
 DROP FUNCTION IF EXISTS insert_skaters_from_staging() CASCADE;
 DROP FUNCTION IF EXISTS get_occurrence_stats() CASCADE;
 DROP FUNCTION IF EXISTS generate_skater_data_hash(BIGINT, BIGINT, BIGINT, BIGINT, DOUBLE PRECISION, BIGINT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) CASCADE;
 DROP PROCEDURE IF EXISTS sync_skaters_from_staging() CASCADE;
 
-DROP TABLE IF EXISTS newapi.skaters CASCADE;
 -- Create the production skaters table with occurrence tracking
-CREATE TABLE newapi.skaters (
+CREATE TABLE IF NOT EXISTS newapi.skaters (
     id SERIAL PRIMARY KEY,
     url_index BIGINT,
     "playerId" BIGINT,
@@ -44,11 +51,11 @@ CREATE TABLE newapi.skaters (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_skaters_player_id ON newapi.skaters("playerId");
-CREATE INDEX idx_skaters_season ON newapi.skaters(season);
-CREATE INDEX idx_skaters_team ON newapi.skaters("triCode");
-CREATE INDEX idx_skaters_occurrence ON newapi.skaters("playerId", season, "gameType", "triCode", occurrence_number);
-CREATE INDEX idx_skaters_active ON newapi.skaters("playerId", season, "gameType", "triCode", is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_skaters_player_id ON newapi.skaters("playerId");
+CREATE INDEX IF NOT EXISTS idx_skaters_season ON newapi.skaters(season);
+CREATE INDEX IF NOT EXISTS idx_skaters_team ON newapi.skaters("triCode");
+CREATE INDEX IF NOT EXISTS idx_skaters_occurrence ON newapi.skaters("playerId", season, "gameType", "triCode", occurrence_number);
+CREATE INDEX IF NOT EXISTS idx_skaters_active ON newapi.skaters("playerId", season, "gameType", "triCode", is_active) WHERE is_active = TRUE;
 
 -- Function to generate a hash of the important data fields
 CREATE OR REPLACE FUNCTION generate_skater_data_hash(
