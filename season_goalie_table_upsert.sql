@@ -181,15 +181,17 @@ BEGIN
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.sv" TEXT;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.fr" TEXT;
 
-    -- Loop through each record in staging
+    -- Loop through each record in staging.
+    -- Keys: NULLIF+TRIM then ::double precision::bigint so '' and '2024.0'
+    -- do not abort the batch. Skip rows whose required keys are unusable.
     FOR rec IN 
         SELECT 
-            "playerId"::bigint AS "playerId",
-            "gameTypeId"::bigint AS "gameTypeId",
+            NULLIF(TRIM("playerId"::text), '')::double precision::bigint AS "playerId",
+            NULLIF(TRIM("gameTypeId"::text), '')::double precision::bigint AS "gameTypeId",
             "gamesPlayed", "goalsAgainst", "goalsAgainstAvg",
             "leagueAbbrev", losses,
-            season::bigint AS season,
-            sequence::bigint AS sequence,
+            NULLIF(TRIM(season::text), '')::double precision::bigint AS season,
+            NULLIF(TRIM(sequence::text), '')::double precision::bigint AS sequence,
             shutouts, ties, "timeOnIce",
             wins, "teamName.default", assists, "gamesStarted", goals, pim, "savePctg",
             "shotsAgainst", "teamCommonName.default", "teamName.fr",
@@ -201,6 +203,10 @@ BEGIN
             "teamPlaceNameWithPreposition.es", "teamPlaceNameWithPreposition.fi",
             "teamPlaceNameWithPreposition.sk", "teamPlaceNameWithPreposition.sv"
         FROM staging1.season_goalie
+        WHERE NULLIF(TRIM("playerId"::text), '') IS NOT NULL
+          AND NULLIF(TRIM("gameTypeId"::text), '') IS NOT NULL
+          AND NULLIF(TRIM(season::text), '') IS NOT NULL
+          AND NULLIF(TRIM(sequence::text), '') IS NOT NULL
     LOOP
         -- Cast every arg to the installed hash signature. Call-up scrapes
         -- rebuild staging1.season_goalie with mixed bigint/text/float types,
@@ -227,11 +233,11 @@ BEGIN
         
         -- Check the active record for this player/season/sequence/team/gameType/league combination
         SELECT * INTO matching_record FROM newapi.season_goalie 
-        WHERE "playerId" = rec."playerId"::bigint
-        AND season = rec.season::bigint
-        AND sequence = rec.sequence::bigint
+        WHERE "playerId" = rec."playerId"
+        AND season = rec.season
+        AND sequence = rec.sequence
         AND "teamName.default" = rec."teamName.default"
-        AND "gameTypeId" = rec."gameTypeId"::bigint
+        AND "gameTypeId" = rec."gameTypeId"
         AND "leagueAbbrev" = rec."leagueAbbrev"
         AND is_active = TRUE
         LIMIT 1;
@@ -262,11 +268,11 @@ BEGIN
             -- Get the next occurrence number for this combination
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
             FROM newapi.season_goalie 
-            WHERE "playerId" = rec."playerId"::bigint
-            AND season = rec.season::bigint
-            AND sequence = rec.sequence::bigint
+            WHERE "playerId" = rec."playerId"
+            AND season = rec.season
+            AND sequence = rec.sequence
             AND "teamName.default" = rec."teamName.default"
-            AND "gameTypeId" = rec."gameTypeId"::bigint
+            AND "gameTypeId" = rec."gameTypeId"
             AND "leagueAbbrev" = rec."leagueAbbrev";
             
             -- Insert new record with the next occurrence number (active by default)
@@ -284,10 +290,10 @@ BEGIN
                 "teamPlaceNameWithPreposition.sk", "teamPlaceNameWithPreposition.sv",
                 occurrence_number, data_hash, is_active
             ) VALUES (
-                rec."playerId"::bigint, rec."gameTypeId"::bigint,
+                rec."playerId", rec."gameTypeId",
                 rec."gamesPlayed"::double precision, rec."goalsAgainst"::double precision,
                 rec."goalsAgainstAvg"::double precision, rec."leagueAbbrev",
-                rec.losses::double precision, rec.season::bigint, rec.sequence::bigint,
+                rec.losses::double precision, rec.season, rec.sequence,
                 rec.shutouts::double precision, rec.ties::double precision,
                 rec."timeOnIce"::text, rec.wins::double precision,
                 rec."teamName.default", rec.assists::double precision,
