@@ -10,7 +10,15 @@
 --
 -- (b) Live RDS re-apply (cast/function fixes, sync logic):
 --     run season_goalie_table_upsert.sql only — never this file
+--
+-- This file sets ON_ERROR_STOP itself. Do not rely on the caller passing
+-- -v ON_ERROR_STOP=1. The opt-in check and DROP share one DO block inside
+-- one transaction: a failed guard cannot reach DROP.
 -- ============================================================================
+
+\set ON_ERROR_STOP on
+
+BEGIN;
 
 DO $$
 BEGIN
@@ -18,11 +26,10 @@ BEGIN
     RAISE EXCEPTION
       'Refusing to DROP newapi.season_goalie. Bootstrap is opt-in. For live RDS run season_goalie_table_upsert.sql. To bootstrap: SET app.allow_bootstrap = ''on'';';
   END IF;
+
+  EXECUTE 'CREATE SCHEMA IF NOT EXISTS newapi';
+  EXECUTE 'DROP TABLE IF EXISTS newapi.season_goalie CASCADE';
 END $$;
-
-CREATE SCHEMA IF NOT EXISTS newapi;
-
-DROP TABLE IF EXISTS newapi.season_goalie CASCADE;
 
 -- Create the production season_goalie table with occurrence tracking
 CREATE TABLE newapi.season_goalie (
@@ -87,3 +94,5 @@ CREATE INDEX idx_season_goalie_team ON newapi.season_goalie("teamName.default");
 CREATE INDEX idx_season_goalie_league ON newapi.season_goalie("leagueAbbrev");
 CREATE INDEX idx_season_goalie_occurrence ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
 CREATE INDEX idx_season_goalie_active ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
+
+COMMIT;

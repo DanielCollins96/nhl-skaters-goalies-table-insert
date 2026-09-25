@@ -165,8 +165,14 @@ BEGIN
     -- Loop through each record in staging
     FOR rec IN 
         SELECT 
-            "playerId", assists, "gameTypeId", "gamesPlayed", goals, "leagueAbbrev", 
-            pim, "plusMinus", points, season, sequence, "teamName.default", 
+            "playerId"::bigint AS "playerId",
+            assists,
+            "gameTypeId"::bigint AS "gameTypeId",
+            "gamesPlayed", goals, "leagueAbbrev", 
+            pim, "plusMinus", points,
+            season::bigint AS season,
+            sequence::bigint AS sequence,
+            "teamName.default", 
             "faceoffWinningPctg", "shootingPctg", shots, "powerPlayGoals", 
             "shorthandedGoals", "gameWinningGoals", "teamCommonName.default", 
             "teamCommonName.cs", "teamCommonName.de", "teamCommonName.es", 
@@ -208,11 +214,11 @@ BEGIN
         
         -- Check the active record for this player/season/sequence/team/gameType/league combination
         SELECT * INTO matching_record FROM newapi.season_skater 
-        WHERE "playerId" = rec."playerId" 
-        AND season = rec.season 
-        AND sequence = rec.sequence
+        WHERE "playerId" = rec."playerId"::bigint
+        AND season = rec.season::bigint
+        AND sequence = rec.sequence::bigint
         AND "teamName.default" = rec."teamName.default"
-        AND "gameTypeId" = rec."gameTypeId" 
+        AND "gameTypeId" = rec."gameTypeId"::bigint
         AND "leagueAbbrev" = rec."leagueAbbrev"
         AND is_active = TRUE
         LIMIT 1;
@@ -243,11 +249,11 @@ BEGIN
             -- Get the next occurrence number for this combination
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
             FROM newapi.season_skater 
-            WHERE "playerId" = rec."playerId" 
-            AND season = rec.season 
-            AND sequence = rec.sequence
+            WHERE "playerId" = rec."playerId"::bigint
+            AND season = rec.season::bigint
+            AND sequence = rec.sequence::bigint
             AND "teamName.default" = rec."teamName.default"
-            AND "gameTypeId" = rec."gameTypeId" 
+            AND "gameTypeId" = rec."gameTypeId"::bigint
             AND "leagueAbbrev" = rec."leagueAbbrev";
             
             -- Insert new record with the next occurrence number (active by default)
@@ -267,11 +273,11 @@ BEGIN
                 "teamPlaceNameWithPreposition.sv",
                 occurrence_number, data_hash, is_active
             ) VALUES (
-                rec."playerId", rec.assists::double precision::bigint, rec."gameTypeId",
+                rec."playerId"::bigint, rec.assists::double precision::bigint, rec."gameTypeId"::bigint,
                 rec."gamesPlayed"::double precision::bigint, rec.goals::double precision::bigint,
                 rec."leagueAbbrev", rec.pim::double precision::bigint,
                 rec."plusMinus"::double precision::bigint, rec.points::double precision::bigint,
-                rec.season, rec.sequence, rec."teamName.default",
+                rec.season::bigint, rec.sequence::bigint, rec."teamName.default",
                 rec."faceoffWinningPctg"::double precision, rec."shootingPctg"::double precision,
                 rec.shots::double precision, rec."powerPlayGoals"::double precision,
                 rec."shorthandedGoals"::double precision, rec."gameWinningGoals"::double precision,

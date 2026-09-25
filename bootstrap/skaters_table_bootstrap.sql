@@ -10,7 +10,15 @@
 --
 -- (b) Live RDS re-apply (cast/function fixes, sync logic):
 --     run skaters_table_upsert.sql only — never this file
+--
+-- This file sets ON_ERROR_STOP itself. Do not rely on the caller passing
+-- -v ON_ERROR_STOP=1. The opt-in check and DROP share one DO block inside
+-- one transaction: a failed guard cannot reach DROP.
 -- ============================================================================
+
+\set ON_ERROR_STOP on
+
+BEGIN;
 
 DO $$
 BEGIN
@@ -18,11 +26,10 @@ BEGIN
     RAISE EXCEPTION
       'Refusing to DROP newapi.skaters. Bootstrap is opt-in. For live RDS run skaters_table_upsert.sql. To bootstrap: SET app.allow_bootstrap = ''on'';';
   END IF;
+
+  EXECUTE 'CREATE SCHEMA IF NOT EXISTS newapi';
+  EXECUTE 'DROP TABLE IF EXISTS newapi.skaters CASCADE';
 END $$;
-
-CREATE SCHEMA IF NOT EXISTS newapi;
-
-DROP TABLE IF EXISTS newapi.skaters CASCADE;
 
 -- Create the production skaters table with occurrence tracking
 CREATE TABLE newapi.skaters (
@@ -68,3 +75,5 @@ CREATE INDEX idx_skaters_season ON newapi.skaters(season);
 CREATE INDEX idx_skaters_team ON newapi.skaters("triCode");
 CREATE INDEX idx_skaters_occurrence ON newapi.skaters("playerId", season, "gameType", "triCode", occurrence_number);
 CREATE INDEX idx_skaters_active ON newapi.skaters("playerId", season, "gameType", "triCode", is_active) WHERE is_active = TRUE;
+
+COMMIT;

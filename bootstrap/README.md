@@ -15,18 +15,20 @@ Then run the matching file in this folder, then the safe upsert file in the repo
 Example:
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "SET app.allow_bootstrap = 'on';" -f bootstrap/season_goalie_table_bootstrap.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f season_goalie_table_upsert.sql
+psql "$DATABASE_URL" -c "SET app.allow_bootstrap = 'on';" -f bootstrap/season_goalie_table_bootstrap.sql
+psql "$DATABASE_URL" -f season_goalie_table_upsert.sql
 ```
 
-`SET` is session-scoped. If you run the bootstrap file in a new `psql` invocation without `-c "SET …"`, it **refuses** to drop anything.
+`SET` is session-scoped. If you run the bootstrap file in a new `psql` invocation without `-c "SET …"`, it **refuses** to drop anything. Each bootstrap file sets `\set ON_ERROR_STOP on` and keeps the opt-in check and `DROP TABLE` in one `DO` block inside one transaction, so a failed guard cannot reach DROP even if the caller omitted `-v ON_ERROR_STOP=1`.
+
+`DROP … CASCADE` also drops views that depend on the table. After bootstrap, re-run the matching upsert file (it recreates the `newapi.*` views defined in that file). If the dropped table is used by the app read models, also re-run `readmodel_views.sql` and `readmodel_s3_export_views.sql`. Those files already recreate the views that read `newapi.players`, `newapi.season_skater`, `newapi.season_goalie`, `newapi.skaters`, `newapi.goalies`, and `newapi.rosters_active` (from `current_rosters`).
 
 ## (b) Live CREATE OR REPLACE re-apply
 
 Run the upsert file only. Do **not** run anything in `bootstrap/`.
 
 ```bash
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f season_goalie_table_upsert.sql
+psql "$DATABASE_URL" -f season_goalie_table_upsert.sql
 ```
 
 ## Inventory

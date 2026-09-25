@@ -8,7 +8,7 @@ These scripts mix **one-time table bootstrap** with **safe-to-rerun** `CREATE OR
 SET app.allow_bootstrap = 'on';
 ```
 
-Never run `bootstrap/` against populated production.
+Never run `bootstrap/` against populated production. Bootstrap files set `\set ON_ERROR_STOP on` and keep the opt-in check and `DROP` in one transaction/`DO` block so a failed check cannot reach DROP.
 
 - **(b) Live re-apply** (cast fixes, sync logic, `ALTER TABLE … ADD COLUMN IF NOT EXISTS`): run the matching `*_upsert.sql` / `player_contracts.sql` file. Those files do **not** `DROP TABLE`. You can apply the whole file; you do not need to skip a DROP block.
 

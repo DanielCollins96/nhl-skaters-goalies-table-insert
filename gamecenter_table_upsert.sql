@@ -4,10 +4,13 @@
 -- Greenfield wipe/recreate: bootstrap/gamecenter_table_bootstrap.sql
 -- (requires SET app.allow_bootstrap = 'on' in the same session).
 -- The old newapi.reset_gamecenter_schema(true) helper lived here; it is gone
--- so a default-run of this file cannot wipe gamecenter.
+-- so a default-run of this file cannot wipe gamecenter. Drop any leftover
+-- copy installed by an earlier apply so it is no longer callable.
 
 CREATE SCHEMA IF NOT EXISTS staging1;
 CREATE SCHEMA IF NOT EXISTS newapi;
+
+DROP FUNCTION IF EXISTS newapi.reset_gamecenter_schema(boolean);
 
 -- Drop existing functions/procs to avoid return-type conflicts.
 DROP FUNCTION IF EXISTS upsert_gamecenter_from_staging_with_logging() CASCADE;

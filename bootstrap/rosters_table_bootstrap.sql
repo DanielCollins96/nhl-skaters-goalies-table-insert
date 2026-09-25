@@ -10,7 +10,15 @@
 --
 -- (b) Live RDS re-apply (cast/function fixes, sync logic):
 --     run rosters_table_upsert.sql only — never this file
+--
+-- This file sets ON_ERROR_STOP itself. Do not rely on the caller passing
+-- -v ON_ERROR_STOP=1. The opt-in check and DROP share one DO block inside
+-- one transaction: a failed guard cannot reach DROP.
 -- ============================================================================
+
+\set ON_ERROR_STOP on
+
+BEGIN;
 
 DO $$
 BEGIN
@@ -18,11 +26,10 @@ BEGIN
     RAISE EXCEPTION
       'Refusing to DROP newapi.current_rosters. Bootstrap is opt-in. For live RDS run rosters_table_upsert.sql. To bootstrap: SET app.allow_bootstrap = ''on'';';
   END IF;
+
+  EXECUTE 'CREATE SCHEMA IF NOT EXISTS newapi';
+  EXECUTE 'DROP TABLE IF EXISTS newapi.current_rosters CASCADE';
 END $$;
-
-CREATE SCHEMA IF NOT EXISTS newapi;
-
-DROP TABLE IF EXISTS newapi.current_rosters CASCADE;
 
 -- Create the production rosters table with occurrence tracking and active flag
 CREATE TABLE newapi.current_rosters (
@@ -60,3 +67,5 @@ CREATE INDEX idx_rosters_team ON newapi.current_rosters("teamAbbreviation");
 CREATE INDEX idx_rosters_active ON newapi.current_rosters(active);
 CREATE INDEX idx_rosters_occurrence ON newapi.current_rosters("playerId", "teamAbbreviation", occurrence_number);
 CREATE INDEX idx_rosters_position ON newapi.current_rosters("positionGroup", "positionCode");
+
+COMMIT;
