@@ -1,3 +1,11 @@
+-- SAFE TO RE-RUN against populated production (live RDS).
+-- This file never DROPs production tables. Schema uses CREATE TABLE IF NOT EXISTS
+-- and CREATE INDEX IF NOT EXISTS; routines use CREATE OR REPLACE.
+-- Greenfield wipe/recreate: bootstrap/rosters_table_bootstrap.sql
+-- (requires SET app.allow_bootstrap = 'on' in the same session).
+
+CREATE SCHEMA IF NOT EXISTS newapi;
+
 -- Drop existing functions first to avoid return type conflicts
 DROP FUNCTION IF EXISTS insert_rosters_from_staging() CASCADE;
 DROP FUNCTION IF EXISTS insert_rosters_from_staging_with_logging() CASCADE;
@@ -5,10 +13,8 @@ DROP FUNCTION IF EXISTS get_rosters_occurrence_stats() CASCADE;
 DROP FUNCTION IF EXISTS generate_roster_data_hash(TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, BIGINT, BIGINT, TEXT, TEXT, TEXT, TEXT) CASCADE;
 DROP PROCEDURE IF EXISTS sync_rosters_from_staging() CASCADE;
 
-DROP TABLE IF EXISTS newapi.current_rosters CASCADE;
-
 -- Create the production rosters table with occurrence tracking and active flag
-CREATE TABLE newapi.current_rosters (
+CREATE TABLE IF NOT EXISTS newapi.current_rosters (
     id SERIAL PRIMARY KEY,
     "teamAbbreviation" TEXT,
     "positionGroup" TEXT,
@@ -38,11 +44,11 @@ CREATE TABLE newapi.current_rosters (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_rosters_player_id ON newapi.current_rosters("playerId");
-CREATE INDEX idx_rosters_team ON newapi.current_rosters("teamAbbreviation");
-CREATE INDEX idx_rosters_active ON newapi.current_rosters(active);
-CREATE INDEX idx_rosters_occurrence ON newapi.current_rosters("playerId", "teamAbbreviation", occurrence_number);
-CREATE INDEX idx_rosters_position ON newapi.current_rosters("positionGroup", "positionCode");
+CREATE INDEX IF NOT EXISTS idx_rosters_player_id ON newapi.current_rosters("playerId");
+CREATE INDEX IF NOT EXISTS idx_rosters_team ON newapi.current_rosters("teamAbbreviation");
+CREATE INDEX IF NOT EXISTS idx_rosters_active ON newapi.current_rosters(active);
+CREATE INDEX IF NOT EXISTS idx_rosters_occurrence ON newapi.current_rosters("playerId", "teamAbbreviation", occurrence_number);
+CREATE INDEX IF NOT EXISTS idx_rosters_position ON newapi.current_rosters("positionGroup", "positionCode");
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.rosters_etl_log (

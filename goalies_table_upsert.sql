@@ -1,3 +1,11 @@
+-- SAFE TO RE-RUN against populated production (live RDS).
+-- This file never DROPs production tables. Schema uses CREATE TABLE IF NOT EXISTS
+-- and CREATE INDEX IF NOT EXISTS; routines use CREATE OR REPLACE.
+-- Greenfield wipe/recreate: bootstrap/goalies_table_bootstrap.sql
+-- (requires SET app.allow_bootstrap = 'on' in the same session).
+
+CREATE SCHEMA IF NOT EXISTS newapi;
+
 -- Drop existing functions first to avoid return type conflicts
 DROP FUNCTION IF EXISTS insert_goalies_from_staging() CASCADE;
 DROP FUNCTION IF EXISTS insert_goalies_from_staging_with_logging() CASCADE;
@@ -5,10 +13,8 @@ DROP FUNCTION IF EXISTS get_goalies_occurrence_stats() CASCADE;
 DROP FUNCTION IF EXISTS generate_goalie_data_hash(BIGINT, BIGINT, BIGINT, BIGINT, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, BIGINT, DOUBLE PRECISION) CASCADE;
 DROP PROCEDURE IF EXISTS sync_goalies_from_staging() CASCADE;
 
-DROP TABLE IF EXISTS newapi.goalies CASCADE;
-
 -- Create the production goalies table with occurrence tracking
-CREATE TABLE newapi.goalies (
+CREATE TABLE IF NOT EXISTS newapi.goalies (
     id SERIAL PRIMARY KEY,
     "playerId" BIGINT,
     headshot TEXT,
@@ -46,11 +52,11 @@ CREATE TABLE newapi.goalies (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_goalies_player_id ON newapi.goalies("playerId");
-CREATE INDEX idx_goalies_season ON newapi.goalies(season);
-CREATE INDEX idx_goalies_team ON newapi.goalies(team);
-CREATE INDEX idx_goalies_occurrence ON newapi.goalies("playerId", season, "gameType", team, occurrence_number);
-CREATE INDEX idx_goalies_active ON newapi.goalies("playerId", season, "gameType", team, is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_goalies_player_id ON newapi.goalies("playerId");
+CREATE INDEX IF NOT EXISTS idx_goalies_season ON newapi.goalies(season);
+CREATE INDEX IF NOT EXISTS idx_goalies_team ON newapi.goalies(team);
+CREATE INDEX IF NOT EXISTS idx_goalies_occurrence ON newapi.goalies("playerId", season, "gameType", team, occurrence_number);
+CREATE INDEX IF NOT EXISTS idx_goalies_active ON newapi.goalies("playerId", season, "gameType", team, is_active) WHERE is_active = TRUE;
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.goalies_etl_log (

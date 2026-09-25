@@ -1,3 +1,11 @@
+-- SAFE TO RE-RUN against populated production (live RDS).
+-- This file never DROPs production tables. Schema uses CREATE TABLE IF NOT EXISTS
+-- and CREATE INDEX IF NOT EXISTS; routines use CREATE OR REPLACE.
+-- Greenfield wipe/recreate: bootstrap/season_skater_table_bootstrap.sql
+-- (requires SET app.allow_bootstrap = 'on' in the same session).
+
+CREATE SCHEMA IF NOT EXISTS newapi;
+
 -- Drop existing functions first to avoid return type conflicts
 DROP FUNCTION IF EXISTS insert_season_skaters_from_staging() CASCADE;
 DROP FUNCTION IF EXISTS insert_season_skaters_from_staging_with_logging() CASCADE;
@@ -5,10 +13,8 @@ DROP FUNCTION IF EXISTS get_season_skaters_occurrence_stats() CASCADE;
 DROP FUNCTION IF EXISTS generate_season_skater_data_hash(DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION, DOUBLE PRECISION) CASCADE;
 DROP PROCEDURE IF EXISTS sync_season_skaters_from_staging() CASCADE;
 
-DROP TABLE IF EXISTS newapi.season_skater CASCADE;
-
 -- Create the production season_skater table with occurrence tracking
-CREATE TABLE newapi.season_skater (
+CREATE TABLE IF NOT EXISTS newapi.season_skater (
     id SERIAL PRIMARY KEY,
     "playerId" BIGINT,
     assists BIGINT,
@@ -65,12 +71,12 @@ CREATE TABLE newapi.season_skater (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_season_skater_player_id ON newapi.season_skater("playerId");
-CREATE INDEX idx_season_skater_season ON newapi.season_skater(season);
-CREATE INDEX idx_season_skater_team ON newapi.season_skater("teamName.default");
-CREATE INDEX idx_season_skater_league ON newapi.season_skater("leagueAbbrev");
-CREATE INDEX idx_season_skater_occurrence ON newapi.season_skater("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
-CREATE INDEX idx_season_skater_active ON newapi.season_skater("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
+CREATE INDEX IF NOT EXISTS idx_season_skater_player_id ON newapi.season_skater("playerId");
+CREATE INDEX IF NOT EXISTS idx_season_skater_season ON newapi.season_skater(season);
+CREATE INDEX IF NOT EXISTS idx_season_skater_team ON newapi.season_skater("teamName.default");
+CREATE INDEX IF NOT EXISTS idx_season_skater_league ON newapi.season_skater("leagueAbbrev");
+CREATE INDEX IF NOT EXISTS idx_season_skater_occurrence ON newapi.season_skater("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
+CREATE INDEX IF NOT EXISTS idx_season_skater_active ON newapi.season_skater("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.season_skater_etl_log (
@@ -156,11 +162,19 @@ DECLARE
 BEGIN
     start_time := CURRENT_TIMESTAMP;
     
-    -- Loop through each record in staging
+    -- Loop through each record in staging.
+    -- Keys: NULLIF+TRIM then ::double precision::bigint so '' and '2024.0'
+    -- do not abort the batch. Skip rows whose required keys are unusable.
     FOR rec IN 
         SELECT 
-            "playerId", assists, "gameTypeId", "gamesPlayed", goals, "leagueAbbrev", 
-            pim, "plusMinus", points, season, sequence, "teamName.default", 
+            NULLIF(TRIM("playerId"::text), '')::double precision::bigint AS "playerId",
+            assists,
+            NULLIF(TRIM("gameTypeId"::text), '')::double precision::bigint AS "gameTypeId",
+            "gamesPlayed", goals, "leagueAbbrev", 
+            pim, "plusMinus", points,
+            NULLIF(TRIM(season::text), '')::double precision::bigint AS season,
+            NULLIF(TRIM(sequence::text), '')::double precision::bigint AS sequence,
+            "teamName.default", 
             "faceoffWinningPctg", "shootingPctg", shots, "powerPlayGoals", 
             "shorthandedGoals", "gameWinningGoals", "teamCommonName.default", 
             "teamCommonName.cs", "teamCommonName.de", "teamCommonName.es", 
@@ -173,6 +187,10 @@ BEGIN
             "teamPlaceNameWithPreposition.fi", "teamPlaceNameWithPreposition.sk", 
             "teamPlaceNameWithPreposition.sv"
         FROM staging1.season_skater
+        WHERE NULLIF(TRIM("playerId"::text), '') IS NOT NULL
+          AND NULLIF(TRIM("gameTypeId"::text), '') IS NOT NULL
+          AND NULLIF(TRIM(season::text), '') IS NOT NULL
+          AND NULLIF(TRIM(sequence::text), '') IS NOT NULL
     LOOP
         -- Cast every arg to the installed hash signature. Staging types
         -- from pandas/call-up scrapes can be bigint or text.
@@ -202,11 +220,11 @@ BEGIN
         
         -- Check the active record for this player/season/sequence/team/gameType/league combination
         SELECT * INTO matching_record FROM newapi.season_skater 
-        WHERE "playerId" = rec."playerId" 
-        AND season = rec.season 
+        WHERE "playerId" = rec."playerId"
+        AND season = rec.season
         AND sequence = rec.sequence
         AND "teamName.default" = rec."teamName.default"
-        AND "gameTypeId" = rec."gameTypeId" 
+        AND "gameTypeId" = rec."gameTypeId"
         AND "leagueAbbrev" = rec."leagueAbbrev"
         AND is_active = TRUE
         LIMIT 1;
@@ -237,11 +255,11 @@ BEGIN
             -- Get the next occurrence number for this combination
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
             FROM newapi.season_skater 
-            WHERE "playerId" = rec."playerId" 
-            AND season = rec.season 
+            WHERE "playerId" = rec."playerId"
+            AND season = rec.season
             AND sequence = rec.sequence
             AND "teamName.default" = rec."teamName.default"
-            AND "gameTypeId" = rec."gameTypeId" 
+            AND "gameTypeId" = rec."gameTypeId"
             AND "leagueAbbrev" = rec."leagueAbbrev";
             
             -- Insert new record with the next occurrence number (active by default)
@@ -415,6 +433,6 @@ SELECT
 FROM newapi.season_skater_etl_log
 ORDER BY run_timestamp DESC;
 
--- Live RDS fix: re-apply only the CREATE OR REPLACE function/procedure
--- blocks above. Do not re-run the DROP TABLE at the top of this file.
+-- Live RDS: this whole file is safe to re-apply. Do not run
+-- bootstrap/season_skater_table_bootstrap.sql against populated production.
 -- CALL sync_season_skaters_from_staging();

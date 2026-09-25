@@ -1,3 +1,18 @@
+## Applying SQL on live RDS
+
+These scripts mix **one-time table bootstrap** with **safe-to-rerun** `CREATE OR REPLACE` functions/procedures.
+
+- **(a) First-time / wipe only**: files under `bootstrap/`. They `DROP TABLE … CASCADE` and will erase production data. They refuse to run unless you opt in in the same session:
+
+```sql
+SET app.allow_bootstrap = 'on';
+```
+
+Never run `bootstrap/` against populated production. Bootstrap files set `\set ON_ERROR_STOP on` and keep the opt-in check and `DROP` in one transaction/`DO` block so a failed check cannot reach DROP.
+
+- **(b) Live re-apply** (cast fixes, sync logic, `ALTER TABLE … ADD COLUMN IF NOT EXISTS`): run the matching `*_upsert.sql` / `player_contracts.sql` file. Those files do **not** `DROP TABLE`. You can apply the whole file; you do not need to skip a DROP block.
+
+Details and the table inventory are in `bootstrap/README.md`.
 
 ## players-table-insert
 
@@ -189,7 +204,7 @@ Load the PuckPedia scrape output into the contract staging tables, then run:
 CALL sync_player_contracts_from_staging();
 ```
 
-`player_contracts.sql` creates the typed contract tables, scrape status table, safe cast helpers for dirty staging values, and the sync procedure. Run the full file when the schema or helpers change:
+`player_contracts.sql` has no `DROP TABLE`; it uses `CREATE TABLE IF NOT EXISTS` for the typed contract tables, scrape status table, safe cast helpers for dirty staging values, and the sync procedure. Run the full file when the schema or helpers change:
 
 ```bash
 psql "$DATABASE_URL" -f player_contracts.sql
