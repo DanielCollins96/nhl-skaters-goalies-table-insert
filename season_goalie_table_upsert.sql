@@ -191,12 +191,25 @@ BEGIN
             "teamPlaceNameWithPreposition.sk", "teamPlaceNameWithPreposition.sv"
         FROM staging1.season_goalie
     LOOP
-        -- Generate hash for the new data
+        -- Cast every arg to the installed hash signature. Call-up scrapes
+        -- rebuild staging1.season_goalie with mixed bigint/text/float types,
+        -- and Postgres will not resolve the function without explicit casts.
         new_hash := generate_season_goalie_data_hash(
-            rec."gamesPlayed", rec."goalsAgainst", rec."goalsAgainstAvg",
-            rec.losses, rec.shutouts, rec.ties, rec.wins,
-            rec.assists, rec."gamesStarted", rec.goals, rec.pim,
-            rec."savePctg", rec."shotsAgainst", rec."otLosses", rec."timeOnIce"
+            rec."gamesPlayed"::double precision,
+            rec."goalsAgainst"::double precision,
+            rec."goalsAgainstAvg"::double precision,
+            rec.losses::double precision,
+            rec.shutouts::double precision,
+            rec.ties::double precision,
+            rec.wins::double precision,
+            rec.assists::double precision,
+            rec."gamesStarted"::double precision,
+            rec.goals::double precision,
+            rec.pim::double precision,
+            rec."savePctg"::double precision,
+            rec."shotsAgainst"::double precision,
+            rec."otLosses"::double precision,
+            rec."timeOnIce"::text
         );
         
         found_match := FALSE;
@@ -260,17 +273,23 @@ BEGIN
                 "teamPlaceNameWithPreposition.sk", "teamPlaceNameWithPreposition.sv",
                 occurrence_number, data_hash, is_active
             ) VALUES (
-                rec."playerId", rec."gameTypeId", rec."gamesPlayed", rec."goalsAgainst",
-                rec."goalsAgainstAvg", rec."leagueAbbrev", rec.losses, rec.season,
-                rec.sequence, rec.shutouts, rec.ties, rec."timeOnIce", rec.wins,
-                rec."teamName.default", rec.assists, rec."gamesStarted", rec.goals,
-                rec.pim, rec."savePctg", rec."shotsAgainst", rec."teamCommonName.default",
+                rec."playerId", rec."gameTypeId",
+                rec."gamesPlayed"::double precision, rec."goalsAgainst"::double precision,
+                rec."goalsAgainstAvg"::double precision, rec."leagueAbbrev",
+                rec.losses::double precision, rec.season, rec.sequence,
+                rec.shutouts::double precision, rec.ties::double precision,
+                rec."timeOnIce"::text, rec.wins::double precision,
+                rec."teamName.default", rec.assists::double precision,
+                rec."gamesStarted"::double precision, rec.goals::double precision,
+                rec.pim::double precision, rec."savePctg"::double precision,
+                rec."shotsAgainst"::double precision, rec."teamCommonName.default",
                 rec."teamName.fr", rec."teamPlaceNameWithPreposition.default",
                 rec."teamPlaceNameWithPreposition.fr", rec."teamCommonName.cs",
                 rec."teamCommonName.de", rec."teamCommonName.es", rec."teamCommonName.fi",
                 rec."teamCommonName.sk", rec."teamCommonName.sv", rec."teamName.cs",
                 rec."teamName.de", rec."teamName.fi", rec."teamName.sk", rec."teamName.sv",
-                rec."otLosses", rec."teamCommonName.fr", rec."teamPlaceNameWithPreposition.cs",
+                rec."otLosses"::double precision, rec."teamCommonName.fr",
+                rec."teamPlaceNameWithPreposition.cs",
                 rec."teamPlaceNameWithPreposition.es", rec."teamPlaceNameWithPreposition.fi",
                 rec."teamPlaceNameWithPreposition.sk", rec."teamPlaceNameWithPreposition.sv",
                 next_occurrence, new_hash, TRUE
@@ -405,5 +424,7 @@ SELECT
 FROM newapi.season_goalie_etl_log
 ORDER BY run_timestamp DESC;
 
--- Execute the sync AFTER you've loaded staging1.season_goalie with pandas to_sql
+-- Live RDS fix: re-apply only the CREATE OR REPLACE function/procedure
+-- blocks above (generate_season_goalie_data_hash, insert_season_goalies_from_staging_with_logging,
+-- sync_season_goalies_from_staging). Do not re-run the DROP TABLE at the top of this file.
 -- CALL sync_season_goalies_from_staging();

@@ -174,14 +174,28 @@ BEGIN
             "teamPlaceNameWithPreposition.sv"
         FROM staging1.season_skater
     LOOP
-        -- Generate hash for the new data
+        -- Cast every arg to the installed hash signature. Staging types
+        -- from pandas/call-up scrapes can be bigint or text.
         new_hash := generate_season_skater_data_hash(
-            rec.assists::DOUBLE PRECISION, rec."gamesPlayed"::DOUBLE PRECISION, rec.goals::DOUBLE PRECISION, 
-            rec.pim::DOUBLE PRECISION, rec."plusMinus"::DOUBLE PRECISION, rec.points::DOUBLE PRECISION, 
-            rec.shots::DOUBLE PRECISION, rec."faceoffWinningPctg"::DOUBLE PRECISION, rec."shootingPctg"::DOUBLE PRECISION,
-            rec."powerPlayGoals"::DOUBLE PRECISION, rec."shorthandedGoals"::DOUBLE PRECISION, rec."gameWinningGoals"::DOUBLE PRECISION,
-            CASE WHEN rec."avgToi" ~ '^\d+(\.\d+)?$' THEN rec."avgToi"::DOUBLE PRECISION ELSE 0::DOUBLE PRECISION END, 
-            0::DOUBLE PRECISION, 0::DOUBLE PRECISION, 0::DOUBLE PRECISION
+            rec.assists::double precision,
+            rec."gamesPlayed"::double precision,
+            rec.goals::double precision,
+            rec.pim::double precision,
+            rec."plusMinus"::double precision,
+            rec.points::double precision,
+            rec.shots::double precision,
+            rec."faceoffWinningPctg"::double precision,
+            rec."shootingPctg"::double precision,
+            rec."powerPlayGoals"::double precision,
+            rec."shorthandedGoals"::double precision,
+            rec."gameWinningGoals"::double precision,
+            CASE
+                WHEN rec."avgToi"::text ~ '^\d+(\.\d+)?$' THEN rec."avgToi"::double precision
+                ELSE 0::double precision
+            END,
+            0::double precision,
+            0::double precision,
+            0::double precision
         );
         
         found_match := FALSE;
@@ -247,19 +261,28 @@ BEGIN
                 "teamPlaceNameWithPreposition.sv",
                 occurrence_number, data_hash, is_active
             ) VALUES (
-                rec."playerId", rec.assists, rec."gameTypeId", rec."gamesPlayed", rec.goals, 
-                rec."leagueAbbrev", rec.pim, rec."plusMinus", rec.points, rec.season, 
-                rec.sequence, rec."teamName.default", rec."faceoffWinningPctg", 
-                rec."shootingPctg", rec.shots, rec."powerPlayGoals", rec."shorthandedGoals", 
-                rec."gameWinningGoals", rec."teamCommonName.default", rec."teamCommonName.cs", 
-                rec."teamCommonName.de", rec."teamCommonName.es", rec."teamCommonName.fi", 
-                rec."teamCommonName.sk", rec."teamCommonName.sv", rec."teamName.cs", 
-                rec."teamName.de", rec."teamName.fi", rec."teamName.sk", rec."teamName.sv", 
-                rec."teamPlaceNameWithPreposition.default", CASE WHEN rec."avgToi" ~ '^\d+(\.\d+)?$' THEN rec."avgToi"::DOUBLE PRECISION ELSE NULL END, rec."otGoals", 
-                rec."powerPlayPoints", rec."shorthandedPoints", rec."teamName.fr", 
-                rec."teamPlaceNameWithPreposition.fr", rec."teamCommonName.fr", 
-                rec."teamPlaceNameWithPreposition.cs", rec."teamPlaceNameWithPreposition.es", 
-                rec."teamPlaceNameWithPreposition.fi", rec."teamPlaceNameWithPreposition.sk", 
+                rec."playerId", rec.assists::double precision::bigint, rec."gameTypeId",
+                rec."gamesPlayed"::double precision::bigint, rec.goals::double precision::bigint,
+                rec."leagueAbbrev", rec.pim::double precision::bigint,
+                rec."plusMinus"::double precision::bigint, rec.points::double precision::bigint,
+                rec.season, rec.sequence, rec."teamName.default",
+                rec."faceoffWinningPctg"::double precision, rec."shootingPctg"::double precision,
+                rec.shots::double precision, rec."powerPlayGoals"::double precision,
+                rec."shorthandedGoals"::double precision, rec."gameWinningGoals"::double precision,
+                rec."teamCommonName.default", rec."teamCommonName.cs",
+                rec."teamCommonName.de", rec."teamCommonName.es", rec."teamCommonName.fi",
+                rec."teamCommonName.sk", rec."teamCommonName.sv", rec."teamName.cs",
+                rec."teamName.de", rec."teamName.fi", rec."teamName.sk", rec."teamName.sv",
+                rec."teamPlaceNameWithPreposition.default",
+                CASE
+                    WHEN rec."avgToi"::text ~ '^\d+(\.\d+)?$' THEN rec."avgToi"::double precision
+                    ELSE NULL
+                END,
+                rec."otGoals"::double precision, rec."powerPlayPoints"::double precision,
+                rec."shorthandedPoints"::double precision, rec."teamName.fr",
+                rec."teamPlaceNameWithPreposition.fr", rec."teamCommonName.fr",
+                rec."teamPlaceNameWithPreposition.cs", rec."teamPlaceNameWithPreposition.es",
+                rec."teamPlaceNameWithPreposition.fi", rec."teamPlaceNameWithPreposition.sk",
                 rec."teamPlaceNameWithPreposition.sv",
                 next_occurrence, new_hash, TRUE
             );
@@ -392,5 +415,6 @@ SELECT
 FROM newapi.season_skater_etl_log
 ORDER BY run_timestamp DESC;
 
--- Execute the sync
+-- Live RDS fix: re-apply only the CREATE OR REPLACE function/procedure
+-- blocks above. Do not re-run the DROP TABLE at the top of this file.
 -- CALL sync_season_skaters_from_staging();
