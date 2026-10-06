@@ -173,7 +173,7 @@ SELECT * FROM get_season_goalies_occurrence_stats();
 
 This is a **normal ETL step**, not a one-off backfill. When club/team skater and goalie stats upsert into `newapi.skaters` / `newapi.goalies`, also upsert the same current-season NHL rows into `newapi.season_skater` / `newapi.season_goalie`. Player pages read season history; they stay current without scraping every landing page and without calling the NHL API at request time.
 
-`sync_season_from_club_stats.sql` never `DROP`s production tables. It maps every club-stats field that already exists on `season_*` into `staging1.season_*` (`sequence = 1`, same `NULLIF+TRIM` / `::double precision::bigint` key normalize as the season upserts) and then calls `sync_season_*_from_staging()`. Historical landing rows in `newapi.season_*` stay; only keys present in club-stats are inserted or hash-updated.
+`sync_season_from_club_stats.sql` never `DROP`s production tables. It maps every club-stats field that already exists on `season_*` into `staging1.season_*` and then calls `sync_season_*_from_staging()`. If an active NHL season row already exists for that player/season/gameType/team, staging **reuses that row’s `sequence` and `teamName.default`** so the hash upsert overwrites GP/G/A/P/TOI (new occurrence) instead of inserting a parallel `sequence = 1` row and leaving the landing stats stale. New players still get `sequence = 1`. Dirty club-stats text is coerced with `club_stats_bigint` / `club_stats_float` so one bad `avgToi` cannot abort the batch.
 
 Prerequisite: `season_skater_table_upsert.sql` and `season_goalie_table_upsert.sql` are already applied (so `sync_season_*_from_staging()` exist). `newapi.teams` must already have rows (true after the first full ETL).
 
@@ -248,6 +248,9 @@ SELECT * FROM newapi.season_skater_missing_from_club_stats
 WHERE season = 20262027;
 
 SELECT * FROM newapi.season_goalie_missing_from_club_stats
+WHERE season = 20262027;
+
+SELECT * FROM newapi.season_skater_stale_from_club_stats
 WHERE season = 20262027;
 
 SELECT * FROM newapi.season_skater_etl_summary LIMIT 5;
