@@ -1,31 +1,61 @@
 -- SAFE TO RE-RUN against populated production (live RDS).
--- Additive only: CREATE OR REPLACE views/procedures. No DROP TABLE.
+-- Additive: DROP/CREATE views and procedures only. No DROP TABLE.
 -- Depends on sync_season_skaters_from_staging() /
 -- sync_season_goalies_from_staging() from season_*_table_upsert.sql.
 --
--- Why: daily club-stats land in newapi.skaters / newapi.goalies, but
--- player pages and leaders read newapi.season_skater / season_goalie
--- (landing scrape). Playing-scope landing only scrapes new call-ups, so
--- rostered players can appear on team pages and still miss the new
--- season (e.g. 20262027) on /api/players/:id. Do not fill that gap
--- from the NHL API at request time — run this backfill on RDS instead.
+-- Normal ETL step (not a one-off backfill). After club-stats upsert
+-- into newapi.skaters / newapi.goalies, map those rows into
+-- staging1.season_* and CALL the existing season hash upserts so
+-- player pages stay current without scraping every landing page.
 --
--- Apply (install views + procedures only; does not write season rows):
+-- Install (does not write season rows):
 --   psql "$DATABASE_URL" -f sync_season_from_club_stats.sql
 --
--- Preview missing player-history rows that club-stats already have:
---   SELECT * FROM newapi.season_skater_missing_from_club_stats
---   WHERE season = 20262027;
---   SELECT * FROM newapi.season_goalie_missing_from_club_stats
---   WHERE season = 20262027;
---
--- Backfill / daily hook (truncates staging1.season_* only, then upserts):
+-- run_etl / operator CALL order — season_stats pipeline:
+--   CALL sync_skaters_from_staging();
+--   CALL sync_goalies_from_staging();
 --   CALL sync_season_skaters_from_club_stats();
 --   CALL sync_season_goalies_from_club_stats();
 --
+-- If the players/landing pipeline also ran in the same job, it must
+-- finish first (PIPELINE_ORDER already has players before season_stats):
+--   CALL sync_players_from_staging();
+--   CALL sync_season_skaters_from_staging();
+--   CALL sync_season_goalies_from_staging();
+-- then the four season_stats CALLs above. Club-stats is the last
+-- writer of current-season NHL season_* rows.
+--
 -- Keys use the same NULLIF+TRIM then ::double precision::bigint
--- normalize as season_*_table_upsert.sql so '' and '2024.0' do not
--- abort the batch. sequence defaults to 1 to match NHL landing NHL rows.
+-- normalize as season_*_table_upsert.sql. sequence = 1.
+--
+-- Field map (only season_* columns that club-stats provides):
+--   skaters.playerId/gameType/season     → playerId/gameTypeId/season
+--   skaters.gamesPlayed/goals/assists/points → same
+--   skaters.penaltyMinutes               → pim
+--   skaters.plusMinus/shots/shootingPctg → plusMinus/shots/shootingPctg
+--   skaters.powerPlayGoals/shorthandedGoals/gameWinningGoals
+--                                        → same names
+--   skaters.overtimeGoals                → otGoals
+--   skaters.faceoffWinPctg               → faceoffWinningPctg
+--   skaters.avgTimeOnIcePerGame          → avgToi
+--       (NHL club-stats seconds per game; Next.js parseToiSeconds
+--        treats a numeric avgToi as seconds)
+--   triCode → teams.fullName             → teamName.default
+--   triCode → franchises.teamCommonName  → teamCommonName.default
+--   not on club-stats                    → powerPlayPoints, shorthandedPoints
+--   club-stats only (no season_* col)    → avgShiftsPerGame, names, headshot
+--
+--   goalies.playerId/gameType/season     → playerId/gameTypeId/season
+--   goalies.gamesPlayed/gamesStarted     → same
+--   goalies.wins/losses/ties/shutouts    → same
+--   goalies.overtimeLosses               → otLosses
+--   goalies.goalsAgainst                 → goalsAgainst
+--   goalies.goalsAgainstAverage          → goalsAgainstAvg
+--   goalies.savePercentage               → savePctg
+--   goalies.shotsAgainst/goals/assists   → same / pim from penaltyMinutes
+--   goalies.timeOnIce                    → timeOnIce (seconds → MM:SS text)
+--   team → teams.fullName                → teamName.default
+--   club-stats only (no season_* col)    → saves, points, names, headshot
 
 CREATE SCHEMA IF NOT EXISTS newapi;
 CREATE SCHEMA IF NOT EXISTS staging1;
@@ -35,23 +65,31 @@ DROP PROCEDURE IF EXISTS sync_season_goalies_from_club_stats() CASCADE;
 DROP PROCEDURE IF EXISTS load_season_skater_staging_from_club_stats() CASCADE;
 DROP PROCEDURE IF EXISTS load_season_goalie_staging_from_club_stats() CASCADE;
 
--- Active team fullName by club-stats tricode (rawTricode or triCode).
+DROP VIEW IF EXISTS newapi.season_skater_missing_from_club_stats CASCADE;
+DROP VIEW IF EXISTS newapi.season_goalie_missing_from_club_stats CASCADE;
+DROP VIEW IF EXISTS newapi.season_skater_from_club_stats CASCADE;
+DROP VIEW IF EXISTS newapi.season_goalie_from_club_stats CASCADE;
+DROP VIEW IF EXISTS newapi.team_fullname_by_tricode CASCADE;
+
+-- Active team names by club-stats tricode (rawTricode or triCode).
 CREATE OR REPLACE VIEW newapi.team_fullname_by_tricode AS
 SELECT DISTINCT ON (abbrev)
     abbrev AS tricode,
-    "fullName"
+    t."fullName",
+    f."teamCommonName"
 FROM (
-    SELECT TRIM(t."rawTricode") AS abbrev, t."fullName", t.active
+    SELECT TRIM(t."rawTricode") AS abbrev, t."fullName", t."franchiseId", t.active
     FROM newapi.teams t
     UNION ALL
-    SELECT TRIM(t."triCode") AS abbrev, t."fullName", t.active
+    SELECT TRIM(t."triCode") AS abbrev, t."fullName", t."franchiseId", t.active
     FROM newapi.teams t
 ) t
+LEFT JOIN newapi.franchises f ON f.id = t."franchiseId"
 WHERE NULLIF(abbrev, '') IS NOT NULL
   AND NULLIF(TRIM(t."fullName"), '') IS NOT NULL
 ORDER BY abbrev, t.active DESC NULLS LAST;
 
--- Club-stats (newapi.skaters) → player season history shape.
+-- Club-stats (newapi.skaters) → season_skater staging shape.
 CREATE OR REPLACE VIEW newapi.season_skater_from_club_stats AS
 SELECT
     NULLIF(TRIM(s."playerId"::text), '')::double precision::bigint AS "playerId",
@@ -66,6 +104,7 @@ SELECT
     NULLIF(TRIM(s.season::text), '')::double precision::bigint AS season,
     1::bigint AS sequence,
     t."fullName" AS "teamName.default",
+    t."teamCommonName" AS "teamCommonName.default",
     s."faceoffWinPctg"::double precision AS "faceoffWinningPctg",
     s."shootingPctg"::double precision AS "shootingPctg",
     s.shots::double precision AS shots,
@@ -93,7 +132,12 @@ SELECT
     c."gamesPlayed",
     c.goals,
     c.assists,
-    c.points
+    c.points,
+    c.pim,
+    c."plusMinus",
+    c.shots,
+    c."powerPlayGoals",
+    c."avgToi"
 FROM newapi.season_skater_from_club_stats c
 WHERE NOT EXISTS (
     SELECT 1
@@ -125,6 +169,7 @@ BEGIN
         season BIGINT,
         sequence BIGINT,
         "teamName.default" TEXT,
+        "teamCommonName.default" TEXT,
         "faceoffWinningPctg" DOUBLE PRECISION,
         "shootingPctg" DOUBLE PRECISION,
         shots DOUBLE PRECISION,
@@ -151,6 +196,7 @@ BEGIN
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS season BIGINT;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS sequence BIGINT;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "teamName.default" TEXT;
+    ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "teamCommonName.default" TEXT;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "faceoffWinningPctg" DOUBLE PRECISION;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "shootingPctg" DOUBLE PRECISION;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS shots DOUBLE PRECISION;
@@ -161,7 +207,6 @@ BEGIN
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "otGoals" DOUBLE PRECISION;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "powerPlayPoints" DOUBLE PRECISION;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "shorthandedPoints" DOUBLE PRECISION;
-    ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "teamCommonName.default" TEXT;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "teamCommonName.cs" TEXT;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "teamCommonName.de" TEXT;
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "teamCommonName.es" TEXT;
@@ -184,12 +229,14 @@ BEGIN
     ALTER TABLE staging1.season_skater ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.sv" TEXT;
 
     -- Staging only. Production newapi.season_skater is not truncated.
-    -- Wipes any pending landing-scrape rows in staging1.season_skater.
+    -- Wipes any pending landing-scrape rows in staging1.season_skater,
+    -- so this CALL must run after landing season sync in the same job.
     TRUNCATE staging1.season_skater;
 
     INSERT INTO staging1.season_skater (
         "playerId", assists, "gameTypeId", "gamesPlayed", goals, "leagueAbbrev",
         pim, "plusMinus", points, season, sequence, "teamName.default",
+        "teamCommonName.default",
         "faceoffWinningPctg", "shootingPctg", shots, "powerPlayGoals",
         "shorthandedGoals", "gameWinningGoals", "avgToi", "otGoals",
         "powerPlayPoints", "shorthandedPoints"
@@ -197,6 +244,7 @@ BEGIN
     SELECT
         "playerId", assists, "gameTypeId", "gamesPlayed", goals, "leagueAbbrev",
         pim, "plusMinus", points, season, sequence, "teamName.default",
+        "teamCommonName.default",
         "faceoffWinningPctg", "shootingPctg", shots, "powerPlayGoals",
         "shorthandedGoals", "gameWinningGoals", "avgToi", "otGoals",
         "powerPlayPoints", "shorthandedPoints"
@@ -212,10 +260,7 @@ BEGIN
 END;
 $$;
 
--- Club-stats (newapi.goalies) → player season history. Same gap as skaters:
--- daily club-stats update team rollups, landing scrape only covers call-ups.
--- sequence defaults to 1. team on newapi.goalies is the NHL triCode.
-
+-- Club-stats (newapi.goalies) → season_goalie staging shape.
 CREATE OR REPLACE VIEW newapi.season_goalie_from_club_stats AS
 SELECT
     NULLIF(TRIM(g."playerId"::text), '')::double precision::bigint AS "playerId",
@@ -229,9 +274,22 @@ SELECT
     1::bigint AS sequence,
     g.shutouts::double precision AS shutouts,
     g.ties::double precision AS ties,
-    g."timeOnIce"::text AS "timeOnIce",
+    CASE
+        WHEN NULLIF(TRIM(g."timeOnIce"::text), '') IS NULL THEN NULL
+        WHEN TRIM(g."timeOnIce"::text) ~ '^\d+:[0-5]?\d$' THEN TRIM(g."timeOnIce"::text)
+        WHEN TRIM(g."timeOnIce"::text) ~ '^\d+(\.\d+)?$' THEN
+            (FLOOR(TRIM(g."timeOnIce"::text)::double precision / 60)::bigint)::text
+            || ':'
+            || LPAD(
+                (ROUND(TRIM(g."timeOnIce"::text)::double precision)::bigint % 60)::text,
+                2,
+                '0'
+            )
+        ELSE TRIM(g."timeOnIce"::text)
+    END AS "timeOnIce",
     g.wins::double precision AS wins,
     t."fullName" AS "teamName.default",
+    t."teamCommonName" AS "teamCommonName.default",
     g.assists::double precision AS assists,
     g."gamesStarted"::double precision AS "gamesStarted",
     g.goals::double precision AS goals,
@@ -256,7 +314,8 @@ SELECT
     c."gamesPlayed",
     c.wins,
     c.losses,
-    c."savePctg"
+    c."savePctg",
+    c."timeOnIce"
 FROM newapi.season_goalie_from_club_stats c
 WHERE NOT EXISTS (
     SELECT 1
@@ -290,6 +349,7 @@ BEGIN
         "timeOnIce" TEXT,
         wins DOUBLE PRECISION,
         "teamName.default" TEXT,
+        "teamCommonName.default" TEXT,
         assists DOUBLE PRECISION,
         "gamesStarted" DOUBLE PRECISION,
         goals DOUBLE PRECISION,
@@ -313,6 +373,7 @@ BEGIN
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "timeOnIce" TEXT;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS wins DOUBLE PRECISION;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamName.default" TEXT;
+    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.default" TEXT;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS assists DOUBLE PRECISION;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "gamesStarted" DOUBLE PRECISION;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS goals DOUBLE PRECISION;
@@ -320,7 +381,6 @@ BEGIN
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "savePctg" DOUBLE PRECISION;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "shotsAgainst" DOUBLE PRECISION;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "otLosses" DOUBLE PRECISION;
-    ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.default" TEXT;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.cs" TEXT;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.de" TEXT;
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.es" TEXT;
@@ -343,19 +403,20 @@ BEGIN
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamPlaceNameWithPreposition.sv" TEXT;
 
     -- Staging only. Production newapi.season_goalie is not truncated.
-    -- Wipes any pending landing-scrape rows in staging1.season_goalie.
     TRUNCATE staging1.season_goalie;
 
     INSERT INTO staging1.season_goalie (
         "playerId", "gameTypeId", "gamesPlayed", "goalsAgainst", "goalsAgainstAvg",
         "leagueAbbrev", losses, season, sequence, shutouts, ties, "timeOnIce",
-        wins, "teamName.default", assists, "gamesStarted", goals, pim,
+        wins, "teamName.default", "teamCommonName.default",
+        assists, "gamesStarted", goals, pim,
         "savePctg", "shotsAgainst", "otLosses"
     )
     SELECT
         "playerId", "gameTypeId", "gamesPlayed", "goalsAgainst", "goalsAgainstAvg",
         "leagueAbbrev", losses, season, sequence, shutouts, ties, "timeOnIce",
-        wins, "teamName.default", assists, "gamesStarted", goals, pim,
+        wins, "teamName.default", "teamCommonName.default",
+        assists, "gamesStarted", goals, pim,
         "savePctg", "shotsAgainst", "otLosses"
     FROM newapi.season_goalie_from_club_stats;
 END;
@@ -370,5 +431,6 @@ END;
 $$;
 
 -- Live RDS: this whole file is safe to re-apply. It does not DROP tables.
+-- After CALL sync_skaters_from_staging() / sync_goalies_from_staging():
 -- CALL sync_season_skaters_from_club_stats();
 -- CALL sync_season_goalies_from_club_stats();

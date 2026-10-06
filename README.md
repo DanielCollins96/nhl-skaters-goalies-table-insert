@@ -169,13 +169,13 @@ SELECT * FROM newapi.season_goalie_multiple_stints;
 SELECT * FROM get_season_goalies_occurrence_stats();
 ```
 
-## season-from-club-stats (backfill)
+## season-from-club-stats (every ETL after club-stats)
 
-Team club-stats land in `newapi.skaters` / `newapi.goalies`, but player pages and leaders read `newapi.season_skater` / `newapi.season_goalie` (landing scrape). Playing-scope landing only scrapes new call-ups, so existing roster players can miss the new season (e.g. `20262027`). **Do not** call the NHL API at request time to fill that gap — apply this file on RDS and `CALL` the procedures.
+This is a **normal ETL step**, not a one-off backfill. When club/team skater and goalie stats upsert into `newapi.skaters` / `newapi.goalies`, also upsert the same current-season NHL rows into `newapi.season_skater` / `newapi.season_goalie`. Player pages read season history; they stay current without scraping every landing page and without calling the NHL API at request time.
 
-This file never `DROP`s production tables. It installs mapping views plus load/sync procedures that write club-stats into `staging1.season_*` (`sequence = 1`, same `NULLIF+TRIM` / `::double precision::bigint` key normalize as the season upserts) and then call the existing `sync_season_*_from_staging()` hash upserts.
+`sync_season_from_club_stats.sql` never `DROP`s production tables. It maps every club-stats field that already exists on `season_*` into `staging1.season_*` (`sequence = 1`, same `NULLIF+TRIM` / `::double precision::bigint` key normalize as the season upserts) and then calls `sync_season_*_from_staging()`. Historical landing rows in `newapi.season_*` stay; only keys present in club-stats are inserted or hash-updated.
 
-Prerequisite: `season_skater_table_upsert.sql` and `season_goalie_table_upsert.sql` are already applied (so `sync_season_*_from_staging()` exist).
+Prerequisite: `season_skater_table_upsert.sql` and `season_goalie_table_upsert.sql` are already applied (so `sync_season_*_from_staging()` exist). `newapi.teams` must already have rows (true after the first full ETL).
 
 ### Install views and procedures
 
@@ -183,55 +183,78 @@ Prerequisite: `season_skater_table_upsert.sql` and `season_goalie_table_upsert.s
 psql "$DATABASE_URL" -f sync_season_from_club_stats.sql
 ```
 
-### Preview missing season rows that club-stats already have
+### Exact CALL order (`run_etl` / operators)
+
+`NHL-ETL` `PIPELINE_ORDER` is `rosters`, `players`, `season_stats`, `teams`, …. Club-stats season upsert belongs in **`season_stats`**, after club-stats have landed in `newapi.skaters` / `newapi.goalies`. If `players` also ran, landing season sync must finish first (it already does).
 
 ```sql
+-- players pipeline (landing; skip if that pipeline is off)
+CALL sync_players_from_staging();
+CALL sync_season_skaters_from_staging();
+CALL sync_season_goalies_from_staging();
+
+-- season_stats pipeline (club-stats, then season history)
+CALL sync_skaters_from_staging();
+CALL sync_goalies_from_staging();
+CALL sync_season_skaters_from_club_stats();
+CALL sync_season_goalies_from_club_stats();
+```
+
+Python hook for `run_etl.py` immediately after the existing club-stats CALLs:
+
+```python
+conn.execute(text("CALL sync_skaters_from_staging()"))
+conn.execute(text("CALL sync_goalies_from_staging()"))
+conn.execute(text("CALL sync_season_skaters_from_club_stats()"))
+conn.execute(text("CALL sync_season_goalies_from_club_stats()"))
+```
+
+`CALL sync_season_*_from_club_stats()` truncates **staging only** (`staging1.season_skater` / `staging1.season_goalie`). It does **not** truncate `newapi.season_*`. Do not run it while a landing scrape is still writing those staging tables.
+
+### Field map (club-stats → season_*)
+
+Only columns that exist on both sides. Club-stats-only fields (`avgShiftsPerGame`, goalie `saves` / `points`) are not invented on `season_*`. Season-only fields club-stats does not send (`powerPlayPoints`, `shorthandedPoints`) stay NULL.
+
+| Club-stats (`newapi.skaters`) | `season_skater` |
+| --- | --- |
+| `playerId`, `gameType`, `season` | `playerId`, `gameTypeId`, `season` (`sequence` = 1, `leagueAbbrev` = `NHL`) |
+| `gamesPlayed`, `goals`, `assists`, `points` | same |
+| `penaltyMinutes` | `pim` |
+| `plusMinus`, `shots`, `shootingPctg` | same |
+| `powerPlayGoals`, `shorthandedGoals`, `gameWinningGoals` | same |
+| `overtimeGoals` | `otGoals` |
+| `faceoffWinPctg` | `faceoffWinningPctg` |
+| `avgTimeOnIcePerGame` (seconds per game) | `avgToi` |
+| `triCode` → `teams.fullName` / `franchises.teamCommonName` | `teamName.default` / `teamCommonName.default` |
+
+| Club-stats (`newapi.goalies`) | `season_goalie` |
+| --- | --- |
+| `playerId`, `gameType`, `season` | `playerId`, `gameTypeId`, `season` (`sequence` = 1, `leagueAbbrev` = `NHL`) |
+| `gamesPlayed`, `gamesStarted`, `wins`, `losses`, `ties`, `shutouts` | same |
+| `overtimeLosses` | `otLosses` |
+| `goalsAgainst`, `goalsAgainstAverage`, `savePercentage`, `shotsAgainst` | `goalsAgainst`, `goalsAgainstAvg`, `savePctg`, `shotsAgainst` |
+| `goals`, `assists`, `penaltyMinutes` | `goals`, `assists`, `pim` |
+| `timeOnIce` (seconds) | `timeOnIce` (MM:SS text, landing style) |
+| `team` → `teams.fullName` / `franchises.teamCommonName` | `teamName.default` / `teamCommonName.default` |
+
+### Preview / verify after a run
+
+```sql
+SELECT * FROM newapi.season_skater_from_club_stats
+WHERE season = 20262027
+LIMIT 20;
+
 SELECT * FROM newapi.season_skater_missing_from_club_stats
 WHERE season = 20262027;
 
 SELECT * FROM newapi.season_goalie_missing_from_club_stats
 WHERE season = 20262027;
-```
 
-Example player ids that showed the 2026–27 gap (ANA club-stats present, season history missing):
-
-```sql
-SELECT * FROM newapi.season_skater_missing_from_club_stats
-WHERE season = 20262027
-  AND "playerId" IN (8484762, 8483521, 8478366, 8483445, 8484153);
-```
-
-Mapped club-stats (including rows that already have a season history match) are in `newapi.season_skater_from_club_stats` and `newapi.season_goalie_from_club_stats`.
-
-### Run the backfill
-
-`CALL` truncates **staging only** (`staging1.season_skater` / `staging1.season_goalie`). It does **not** truncate `newapi.season_skater` / `newapi.season_goalie`. Do not run concurrently with a landing scrape that is still writing those staging tables.
-
-```sql
-CALL sync_season_skaters_from_club_stats();
-CALL sync_season_goalies_from_club_stats();
-```
-
-Then check the existing ETL summaries and that the preview views are empty for the season you care about:
-
-```sql
 SELECT * FROM newapi.season_skater_etl_summary LIMIT 5;
 SELECT * FROM newapi.season_goalie_etl_summary LIMIT 5;
-
-SELECT COUNT(*) FROM newapi.season_skater_missing_from_club_stats
-WHERE season = 20262027;
-SELECT COUNT(*) FROM newapi.season_goalie_missing_from_club_stats
-WHERE season = 20262027;
 ```
 
-Republish player read models after the backfill (`readmodel_views.sql` / `readmodel_s3_export_views.sql`, or the usual S3 publish job). A Next.js deploy alone does not write these rows.
-
-Daily ETL hook after club-stats / season_stats sync:
-
-```python
-conn.execute(text("CALL sync_season_skaters_from_club_stats()"))
-conn.execute(text("CALL sync_season_goalies_from_club_stats()"))
-```
+After ETL, republish player read models (`readmodel_views.sql` / `readmodel_s3_export_views.sql`, or the usual S3 publish job) so `/api/players` picks up the new season rows and TOI. A Next.js deploy alone does not write these rows.
 
 ## gamecenter-table-insert
 

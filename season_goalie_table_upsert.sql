@@ -444,5 +444,6 @@ ORDER BY run_timestamp DESC;
 -- Live RDS: this whole file is safe to re-apply. Do not run
 -- bootstrap/season_goalie_table_bootstrap.sql against populated production.
 -- CALL sync_season_goalies_from_staging();
--- Club-stats → season history (no request-time NHL API):
--- sync_season_from_club_stats.sql then CALL sync_season_goalies_from_club_stats();
+-- After club-stats CALL sync_goalies_from_staging(), also:
+--   CALL sync_season_goalies_from_club_stats();
+-- (sync_season_from_club_stats.sql — every ETL, not a one-off backfill)
