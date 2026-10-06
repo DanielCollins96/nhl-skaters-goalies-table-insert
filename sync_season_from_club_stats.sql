@@ -26,7 +26,15 @@
 -- writer of current-season NHL season_* rows.
 --
 -- Keys use the same NULLIF+TRIM then ::double precision::bigint
--- normalize as season_*_table_upsert.sql. sequence = 1.
+-- normalize as season_*_table_upsert.sql. Staging reuses the active
+-- season_* sequence + teamName when one already exists for that
+-- player/season/gameType/team so sync_season_*_from_staging hash-
+-- updates GP/G/A/P/TOI instead of inserting a parallel sequence=1
+-- row and leaving the landing row stale.
+--
+-- Stale existing rows (hash upsert should overwrite these on CALL):
+--   SELECT * FROM newapi.season_skater_stale_from_club_stats
+--   WHERE season = 20262027;
 --
 -- Field map (only season_* columns that club-stats provides):
 --   skaters.playerId/gameType/season     → playerId/gameTypeId/season
@@ -65,11 +73,37 @@ DROP PROCEDURE IF EXISTS sync_season_goalies_from_club_stats() CASCADE;
 DROP PROCEDURE IF EXISTS load_season_skater_staging_from_club_stats() CASCADE;
 DROP PROCEDURE IF EXISTS load_season_goalie_staging_from_club_stats() CASCADE;
 
+DROP VIEW IF EXISTS newapi.season_skater_stale_from_club_stats CASCADE;
+DROP VIEW IF EXISTS newapi.season_goalie_stale_from_club_stats CASCADE;
 DROP VIEW IF EXISTS newapi.season_skater_missing_from_club_stats CASCADE;
 DROP VIEW IF EXISTS newapi.season_goalie_missing_from_club_stats CASCADE;
 DROP VIEW IF EXISTS newapi.season_skater_from_club_stats CASCADE;
 DROP VIEW IF EXISTS newapi.season_goalie_from_club_stats CASCADE;
 DROP VIEW IF EXISTS newapi.team_fullname_by_tricode CASCADE;
+DROP FUNCTION IF EXISTS newapi.club_stats_bigint(text) CASCADE;
+DROP FUNCTION IF EXISTS newapi.club_stats_float(text) CASCADE;
+
+-- Dirty club-stats / pandas text must not abort the staging INSERT.
+CREATE OR REPLACE FUNCTION newapi.club_stats_bigint(p_value text)
+RETURNS bigint
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN NULLIF(TRIM(p_value), '') ~ '^\d+(\.\d+)?$'
+        THEN TRIM(p_value)::double precision::bigint
+    END;
+$$;
+
+CREATE OR REPLACE FUNCTION newapi.club_stats_float(p_value text)
+RETURNS double precision
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT CASE
+        WHEN NULLIF(TRIM(p_value), '') ~ '^\d+(\.\d+)?$'
+        THEN TRIM(p_value)::double precision
+        WHEN NULLIF(TRIM(p_value), '') ~ '^\d+:[0-5]?\d(\.\d+)?$'
+        THEN SPLIT_PART(TRIM(p_value), ':', 1)::double precision * 60
+           + SPLIT_PART(TRIM(p_value), ':', 2)::double precision
+    END;
+$$;
 
 -- Active team names by club-stats tricode (rawTricode or triCode).
 CREATE OR REPLACE VIEW newapi.team_fullname_by_tricode AS
@@ -78,10 +112,10 @@ SELECT DISTINCT ON (abbrev)
     t."fullName",
     f."teamCommonName"
 FROM (
-    SELECT TRIM(t."rawTricode") AS abbrev, t."fullName", t."franchiseId", t.active
+    SELECT UPPER(TRIM(t."rawTricode")) AS abbrev, t."fullName", t."franchiseId", t.active
     FROM newapi.teams t
     UNION ALL
-    SELECT TRIM(t."triCode") AS abbrev, t."fullName", t."franchiseId", t.active
+    SELECT UPPER(TRIM(t."triCode")) AS abbrev, t."fullName", t."franchiseId", t.active
     FROM newapi.teams t
 ) t
 LEFT JOIN newapi.franchises f ON f.id = t."franchiseId"
@@ -90,37 +124,101 @@ WHERE NULLIF(abbrev, '') IS NOT NULL
 ORDER BY abbrev, t.active DESC NULLS LAST;
 
 -- Club-stats (newapi.skaters) → season_skater staging shape.
+-- Reuse the live season_* key (sequence + teamName) so
+-- sync_season_skaters_from_staging() hash-updates that row.
 CREATE OR REPLACE VIEW newapi.season_skater_from_club_stats AS
+WITH club AS (
+    SELECT
+        newapi.club_stats_bigint(s."playerId"::text) AS "playerId",
+        newapi.club_stats_float(s.assists::text) AS assists,
+        newapi.club_stats_bigint(s."gameType"::text) AS "gameTypeId",
+        newapi.club_stats_float(s."gamesPlayed"::text) AS "gamesPlayed",
+        newapi.club_stats_float(s.goals::text) AS goals,
+        'NHL'::text AS "leagueAbbrev",
+        newapi.club_stats_float(s."penaltyMinutes"::text) AS pim,
+        newapi.club_stats_float(s."plusMinus"::text) AS "plusMinus",
+        newapi.club_stats_float(s.points::text) AS points,
+        newapi.club_stats_bigint(s.season::text) AS season,
+        newapi.club_stats_float(s."faceoffWinPctg"::text) AS "faceoffWinningPctg",
+        newapi.club_stats_float(s."shootingPctg"::text) AS "shootingPctg",
+        newapi.club_stats_float(s.shots::text) AS shots,
+        newapi.club_stats_float(s."powerPlayGoals"::text) AS "powerPlayGoals",
+        newapi.club_stats_float(s."shorthandedGoals"::text) AS "shorthandedGoals",
+        newapi.club_stats_float(s."gameWinningGoals"::text) AS "gameWinningGoals",
+        newapi.club_stats_float(s."avgTimeOnIcePerGame"::text) AS "avgToi",
+        newapi.club_stats_float(s."overtimeGoals"::text) AS "otGoals",
+        UPPER(TRIM(s."triCode")) AS tricode
+    FROM newapi.skaters s
+    WHERE s.is_active = TRUE
+      AND newapi.club_stats_bigint(s."playerId"::text) IS NOT NULL
+      AND newapi.club_stats_bigint(s."gameType"::text) IS NOT NULL
+      AND newapi.club_stats_bigint(s.season::text) IS NOT NULL
+      AND NULLIF(TRIM(s."triCode"), '') IS NOT NULL
+)
 SELECT
-    NULLIF(TRIM(s."playerId"::text), '')::double precision::bigint AS "playerId",
-    s.assists::double precision AS assists,
-    NULLIF(TRIM(s."gameType"::text), '')::double precision::bigint AS "gameTypeId",
-    s."gamesPlayed"::double precision AS "gamesPlayed",
-    s.goals::double precision AS goals,
-    'NHL'::text AS "leagueAbbrev",
-    s."penaltyMinutes"::double precision AS pim,
-    s."plusMinus"::double precision AS "plusMinus",
-    s.points::double precision AS points,
-    NULLIF(TRIM(s.season::text), '')::double precision::bigint AS season,
-    1::bigint AS sequence,
-    t."fullName" AS "teamName.default",
-    t."teamCommonName" AS "teamCommonName.default",
-    s."faceoffWinPctg"::double precision AS "faceoffWinningPctg",
-    s."shootingPctg"::double precision AS "shootingPctg",
-    s.shots::double precision AS shots,
-    s."powerPlayGoals"::double precision AS "powerPlayGoals",
-    s."shorthandedGoals"::double precision AS "shorthandedGoals",
-    s."gameWinningGoals"::double precision AS "gameWinningGoals",
-    s."avgTimeOnIcePerGame"::double precision AS "avgToi",
-    s."overtimeGoals"::double precision AS "otGoals",
+    c."playerId",
+    c.assists,
+    c."gameTypeId",
+    c."gamesPlayed",
+    c.goals,
+    c."leagueAbbrev",
+    c.pim,
+    c."plusMinus",
+    c.points,
+    c.season,
+    COALESCE(existing.sequence, 1::bigint) AS sequence,
+    COALESCE(existing."teamName.default", t."fullName") AS "teamName.default",
+    COALESCE(existing."teamCommonName.default", t."teamCommonName") AS "teamCommonName.default",
+    c."faceoffWinningPctg",
+    c."shootingPctg",
+    c.shots,
+    c."powerPlayGoals",
+    c."shorthandedGoals",
+    c."gameWinningGoals",
+    c."avgToi",
+    c."otGoals",
     NULL::double precision AS "powerPlayPoints",
     NULL::double precision AS "shorthandedPoints"
-FROM newapi.skaters s
-JOIN newapi.team_fullname_by_tricode t ON t.tricode = TRIM(s."triCode")
-WHERE s.is_active = TRUE
-  AND NULLIF(TRIM(s."playerId"::text), '') IS NOT NULL
-  AND NULLIF(TRIM(s."gameType"::text), '') IS NOT NULL
-  AND NULLIF(TRIM(s.season::text), '') IS NOT NULL;
+FROM club c
+LEFT JOIN newapi.team_fullname_by_tricode t ON t.tricode = c.tricode
+LEFT JOIN LATERAL (
+    SELECT
+        ss.sequence,
+        ss."teamName.default",
+        ss."teamCommonName.default"
+    FROM newapi.season_skater ss
+    LEFT JOIN newapi.teams et ON et."fullName" = ss."teamName.default"
+    WHERE ss.is_active = TRUE
+      AND ss."playerId" = c."playerId"
+      AND ss.season = c.season
+      AND ss."gameTypeId" = c."gameTypeId"
+      AND ss."leagueAbbrev" = 'NHL'
+      AND (
+          ss."teamName.default" = t."fullName"
+          OR ss."teamName.default" = t."teamCommonName"
+          OR UPPER(TRIM(et."rawTricode")) = c.tricode
+          OR UPPER(TRIM(et."triCode")) = c.tricode
+          OR NOT EXISTS (
+              SELECT 1
+              FROM newapi.season_skater other
+              WHERE other.is_active = TRUE
+                AND other."playerId" = c."playerId"
+                AND other.season = c.season
+                AND other."gameTypeId" = c."gameTypeId"
+                AND other."leagueAbbrev" = 'NHL'
+                AND other."teamName.default" IS DISTINCT FROM ss."teamName.default"
+          )
+      )
+    ORDER BY
+        CASE
+            WHEN ss."teamName.default" = t."fullName" THEN 0
+            WHEN UPPER(TRIM(COALESCE(et."rawTricode", et."triCode"))) = c.tricode THEN 1
+            ELSE 2
+        END,
+        ss.sequence
+    LIMIT 1
+) existing ON TRUE
+WHERE COALESCE(existing."teamName.default", t."fullName") IS NOT NULL;
 
 CREATE OR REPLACE VIEW newapi.season_skater_missing_from_club_stats AS
 SELECT
@@ -150,6 +248,38 @@ WHERE NOT EXISTS (
       AND ss."leagueAbbrev" = 'NHL'
       AND ss."teamName.default" = c."teamName.default"
 );
+
+CREATE OR REPLACE VIEW newapi.season_skater_stale_from_club_stats AS
+SELECT
+    c."playerId",
+    c.season,
+    c.sequence,
+    c."gameTypeId",
+    c."teamName.default",
+    ss."gamesPlayed" AS season_games,
+    c."gamesPlayed" AS club_games,
+    ss.goals AS season_goals,
+    c.goals AS club_goals,
+    ss.assists AS season_assists,
+    c.assists AS club_assists,
+    ss.points AS season_points,
+    c.points AS club_points,
+    ss."avgToi" AS season_avg_toi,
+    c."avgToi" AS club_avg_toi
+FROM newapi.season_skater_from_club_stats c
+JOIN newapi.season_skater ss
+    ON ss.is_active = TRUE
+   AND ss."playerId" = c."playerId"
+   AND ss.season = c.season
+   AND ss.sequence = c.sequence
+   AND ss."gameTypeId" = c."gameTypeId"
+   AND ss."leagueAbbrev" = 'NHL'
+   AND ss."teamName.default" = c."teamName.default"
+WHERE ss."gamesPlayed" IS DISTINCT FROM c."gamesPlayed"::double precision::bigint
+   OR ss.goals IS DISTINCT FROM c.goals::double precision::bigint
+   OR ss.assists IS DISTINCT FROM c.assists::double precision::bigint
+   OR ss.points IS DISTINCT FROM c.points::double precision::bigint
+   OR ss."avgToi" IS DISTINCT FROM c."avgToi";
 
 CREATE OR REPLACE PROCEDURE load_season_skater_staging_from_club_stats()
 LANGUAGE plpgsql AS $$
@@ -261,48 +391,112 @@ END;
 $$;
 
 -- Club-stats (newapi.goalies) → season_goalie staging shape.
+-- Reuse the live season_* key so hash upsert overwrites W-L / TOI / GAA.
 CREATE OR REPLACE VIEW newapi.season_goalie_from_club_stats AS
+WITH club AS (
+    SELECT
+        newapi.club_stats_bigint(g."playerId"::text) AS "playerId",
+        newapi.club_stats_bigint(g."gameType"::text) AS "gameTypeId",
+        newapi.club_stats_float(g."gamesPlayed"::text) AS "gamesPlayed",
+        newapi.club_stats_float(g."goalsAgainst"::text) AS "goalsAgainst",
+        newapi.club_stats_float(g."goalsAgainstAverage"::text) AS "goalsAgainstAvg",
+        'NHL'::text AS "leagueAbbrev",
+        newapi.club_stats_float(g.losses::text) AS losses,
+        newapi.club_stats_bigint(g.season::text) AS season,
+        newapi.club_stats_float(g.shutouts::text) AS shutouts,
+        newapi.club_stats_float(g.ties::text) AS ties,
+        CASE
+            WHEN NULLIF(TRIM(g."timeOnIce"::text), '') IS NULL THEN NULL
+            WHEN TRIM(g."timeOnIce"::text) ~ '^\d+:[0-5]?\d$' THEN TRIM(g."timeOnIce"::text)
+            WHEN TRIM(g."timeOnIce"::text) ~ '^\d+(\.\d+)?$' THEN
+                (FLOOR(TRIM(g."timeOnIce"::text)::double precision / 60)::bigint)::text
+                || ':'
+                || LPAD(
+                    (ROUND(TRIM(g."timeOnIce"::text)::double precision)::bigint % 60)::text,
+                    2,
+                    '0'
+                )
+            ELSE NULL
+        END AS "timeOnIce",
+        newapi.club_stats_float(g.wins::text) AS wins,
+        newapi.club_stats_float(g.assists::text) AS assists,
+        newapi.club_stats_float(g."gamesStarted"::text) AS "gamesStarted",
+        newapi.club_stats_float(g.goals::text) AS goals,
+        newapi.club_stats_float(g."penaltyMinutes"::text) AS pim,
+        newapi.club_stats_float(g."savePercentage"::text) AS "savePctg",
+        newapi.club_stats_float(g."shotsAgainst"::text) AS "shotsAgainst",
+        newapi.club_stats_float(g."overtimeLosses"::text) AS "otLosses",
+        UPPER(TRIM(g.team)) AS tricode
+    FROM newapi.goalies g
+    WHERE g.is_active = TRUE
+      AND newapi.club_stats_bigint(g."playerId"::text) IS NOT NULL
+      AND newapi.club_stats_bigint(g."gameType"::text) IS NOT NULL
+      AND newapi.club_stats_bigint(g.season::text) IS NOT NULL
+      AND NULLIF(TRIM(g.team), '') IS NOT NULL
+)
 SELECT
-    NULLIF(TRIM(g."playerId"::text), '')::double precision::bigint AS "playerId",
-    NULLIF(TRIM(g."gameType"::text), '')::double precision::bigint AS "gameTypeId",
-    g."gamesPlayed"::double precision AS "gamesPlayed",
-    g."goalsAgainst"::double precision AS "goalsAgainst",
-    g."goalsAgainstAverage"::double precision AS "goalsAgainstAvg",
-    'NHL'::text AS "leagueAbbrev",
-    g.losses::double precision AS losses,
-    NULLIF(TRIM(g.season::text), '')::double precision::bigint AS season,
-    1::bigint AS sequence,
-    g.shutouts::double precision AS shutouts,
-    g.ties::double precision AS ties,
-    CASE
-        WHEN NULLIF(TRIM(g."timeOnIce"::text), '') IS NULL THEN NULL
-        WHEN TRIM(g."timeOnIce"::text) ~ '^\d+:[0-5]?\d$' THEN TRIM(g."timeOnIce"::text)
-        WHEN TRIM(g."timeOnIce"::text) ~ '^\d+(\.\d+)?$' THEN
-            (FLOOR(TRIM(g."timeOnIce"::text)::double precision / 60)::bigint)::text
-            || ':'
-            || LPAD(
-                (ROUND(TRIM(g."timeOnIce"::text)::double precision)::bigint % 60)::text,
-                2,
-                '0'
-            )
-        ELSE TRIM(g."timeOnIce"::text)
-    END AS "timeOnIce",
-    g.wins::double precision AS wins,
-    t."fullName" AS "teamName.default",
-    t."teamCommonName" AS "teamCommonName.default",
-    g.assists::double precision AS assists,
-    g."gamesStarted"::double precision AS "gamesStarted",
-    g.goals::double precision AS goals,
-    g."penaltyMinutes"::double precision AS pim,
-    g."savePercentage"::double precision AS "savePctg",
-    g."shotsAgainst"::double precision AS "shotsAgainst",
-    g."overtimeLosses"::double precision AS "otLosses"
-FROM newapi.goalies g
-JOIN newapi.team_fullname_by_tricode t ON t.tricode = TRIM(g.team)
-WHERE g.is_active = TRUE
-  AND NULLIF(TRIM(g."playerId"::text), '') IS NOT NULL
-  AND NULLIF(TRIM(g."gameType"::text), '') IS NOT NULL
-  AND NULLIF(TRIM(g.season::text), '') IS NOT NULL;
+    c."playerId",
+    c."gameTypeId",
+    c."gamesPlayed",
+    c."goalsAgainst",
+    c."goalsAgainstAvg",
+    c."leagueAbbrev",
+    c.losses,
+    c.season,
+    COALESCE(existing.sequence, 1::bigint) AS sequence,
+    c.shutouts,
+    c.ties,
+    c."timeOnIce",
+    c.wins,
+    COALESCE(existing."teamName.default", t."fullName") AS "teamName.default",
+    COALESCE(existing."teamCommonName.default", t."teamCommonName") AS "teamCommonName.default",
+    c.assists,
+    c."gamesStarted",
+    c.goals,
+    c.pim,
+    c."savePctg",
+    c."shotsAgainst",
+    c."otLosses"
+FROM club c
+LEFT JOIN newapi.team_fullname_by_tricode t ON t.tricode = c.tricode
+LEFT JOIN LATERAL (
+    SELECT
+        sg.sequence,
+        sg."teamName.default",
+        sg."teamCommonName.default"
+    FROM newapi.season_goalie sg
+    LEFT JOIN newapi.teams et ON et."fullName" = sg."teamName.default"
+    WHERE sg.is_active = TRUE
+      AND sg."playerId" = c."playerId"
+      AND sg.season = c.season
+      AND sg."gameTypeId" = c."gameTypeId"
+      AND sg."leagueAbbrev" = 'NHL'
+      AND (
+          sg."teamName.default" = t."fullName"
+          OR sg."teamName.default" = t."teamCommonName"
+          OR UPPER(TRIM(et."rawTricode")) = c.tricode
+          OR UPPER(TRIM(et."triCode")) = c.tricode
+          OR NOT EXISTS (
+              SELECT 1
+              FROM newapi.season_goalie other
+              WHERE other.is_active = TRUE
+                AND other."playerId" = c."playerId"
+                AND other.season = c.season
+                AND other."gameTypeId" = c."gameTypeId"
+                AND other."leagueAbbrev" = 'NHL'
+                AND other."teamName.default" IS DISTINCT FROM sg."teamName.default"
+          )
+      )
+    ORDER BY
+        CASE
+            WHEN sg."teamName.default" = t."fullName" THEN 0
+            WHEN UPPER(TRIM(COALESCE(et."rawTricode", et."triCode"))) = c.tricode THEN 1
+            ELSE 2
+        END,
+        sg.sequence
+    LIMIT 1
+) existing ON TRUE
+WHERE COALESCE(existing."teamName.default", t."fullName") IS NOT NULL;
 
 CREATE OR REPLACE VIEW newapi.season_goalie_missing_from_club_stats AS
 SELECT
@@ -328,6 +522,35 @@ WHERE NOT EXISTS (
       AND sg."leagueAbbrev" = 'NHL'
       AND sg."teamName.default" = c."teamName.default"
 );
+
+CREATE OR REPLACE VIEW newapi.season_goalie_stale_from_club_stats AS
+SELECT
+    c."playerId",
+    c.season,
+    c.sequence,
+    c."gameTypeId",
+    c."teamName.default",
+    sg."gamesPlayed" AS season_games,
+    c."gamesPlayed" AS club_games,
+    sg.wins AS season_wins,
+    c.wins AS club_wins,
+    sg.losses AS season_losses,
+    c.losses AS club_losses,
+    sg."savePctg" AS season_save_pctg,
+    c."savePctg" AS club_save_pctg
+FROM newapi.season_goalie_from_club_stats c
+JOIN newapi.season_goalie sg
+    ON sg.is_active = TRUE
+   AND sg."playerId" = c."playerId"
+   AND sg.season = c.season
+   AND sg.sequence = c.sequence
+   AND sg."gameTypeId" = c."gameTypeId"
+   AND sg."leagueAbbrev" = 'NHL'
+   AND sg."teamName.default" = c."teamName.default"
+WHERE sg."gamesPlayed" IS DISTINCT FROM c."gamesPlayed"
+   OR sg.wins IS DISTINCT FROM c.wins
+   OR sg.losses IS DISTINCT FROM c.losses
+   OR sg."savePctg" IS DISTINCT FROM c."savePctg";
 
 CREATE OR REPLACE PROCEDURE load_season_goalie_staging_from_club_stats()
 LANGUAGE plpgsql AS $$
