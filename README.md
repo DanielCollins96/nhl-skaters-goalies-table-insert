@@ -10,7 +10,7 @@ SET app.allow_bootstrap = 'on';
 
 Never run `bootstrap/` against populated production. Bootstrap files set `\set ON_ERROR_STOP on` and keep the opt-in check and `DROP` in one transaction/`DO` block so a failed check cannot reach DROP.
 
-- **(b) Live re-apply** (cast fixes, sync logic, `ALTER TABLE … ADD COLUMN IF NOT EXISTS`): run the matching `*_upsert.sql` / `player_contracts.sql` file. Those files do **not** `DROP TABLE`. You can apply the whole file; you do not need to skip a DROP block.
+- **(b) Live re-apply** (cast fixes, sync logic, `ALTER TABLE … ADD COLUMN IF NOT EXISTS`): run the matching `*_upsert.sql` / `player_contracts.sql` / `sync_season_from_club_stats.sql` file. Those files do **not** `DROP TABLE`. You can apply the whole file; you do not need to skip a DROP block.
 
 Details and the table inventory are in `bootstrap/README.md`.
 
@@ -167,6 +167,70 @@ SELECT * FROM newapi.season_goalie_multiple_stints;
 
 ```sql
 SELECT * FROM get_season_goalies_occurrence_stats();
+```
+
+## season-from-club-stats (backfill)
+
+Team club-stats land in `newapi.skaters` / `newapi.goalies`, but player pages and leaders read `newapi.season_skater` / `newapi.season_goalie` (landing scrape). Playing-scope landing only scrapes new call-ups, so existing roster players can miss the new season (e.g. `20262027`). **Do not** call the NHL API at request time to fill that gap — apply this file on RDS and `CALL` the procedures.
+
+This file never `DROP`s production tables. It installs mapping views plus load/sync procedures that write club-stats into `staging1.season_*` (`sequence = 1`, same `NULLIF+TRIM` / `::double precision::bigint` key normalize as the season upserts) and then call the existing `sync_season_*_from_staging()` hash upserts.
+
+Prerequisite: `season_skater_table_upsert.sql` and `season_goalie_table_upsert.sql` are already applied (so `sync_season_*_from_staging()` exist).
+
+### Install views and procedures
+
+```bash
+psql "$DATABASE_URL" -f sync_season_from_club_stats.sql
+```
+
+### Preview missing season rows that club-stats already have
+
+```sql
+SELECT * FROM newapi.season_skater_missing_from_club_stats
+WHERE season = 20262027;
+
+SELECT * FROM newapi.season_goalie_missing_from_club_stats
+WHERE season = 20262027;
+```
+
+Example player ids that showed the 2026–27 gap (ANA club-stats present, season history missing):
+
+```sql
+SELECT * FROM newapi.season_skater_missing_from_club_stats
+WHERE season = 20262027
+  AND "playerId" IN (8484762, 8483521, 8478366, 8483445, 8484153);
+```
+
+Mapped club-stats (including rows that already have a season history match) are in `newapi.season_skater_from_club_stats` and `newapi.season_goalie_from_club_stats`.
+
+### Run the backfill
+
+`CALL` truncates **staging only** (`staging1.season_skater` / `staging1.season_goalie`). It does **not** truncate `newapi.season_skater` / `newapi.season_goalie`. Do not run concurrently with a landing scrape that is still writing those staging tables.
+
+```sql
+CALL sync_season_skaters_from_club_stats();
+CALL sync_season_goalies_from_club_stats();
+```
+
+Then check the existing ETL summaries and that the preview views are empty for the season you care about:
+
+```sql
+SELECT * FROM newapi.season_skater_etl_summary LIMIT 5;
+SELECT * FROM newapi.season_goalie_etl_summary LIMIT 5;
+
+SELECT COUNT(*) FROM newapi.season_skater_missing_from_club_stats
+WHERE season = 20262027;
+SELECT COUNT(*) FROM newapi.season_goalie_missing_from_club_stats
+WHERE season = 20262027;
+```
+
+Republish player read models after the backfill (`readmodel_views.sql` / `readmodel_s3_export_views.sql`, or the usual S3 publish job). A Next.js deploy alone does not write these rows.
+
+Daily ETL hook after club-stats / season_stats sync:
+
+```python
+conn.execute(text("CALL sync_season_skaters_from_club_stats()"))
+conn.execute(text("CALL sync_season_goalies_from_club_stats()"))
 ```
 
 ## gamecenter-table-insert
