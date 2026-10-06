@@ -43,6 +43,6 @@ psql "$DATABASE_URL" -f season_goalie_table_upsert.sql
 | `newapi.current_rosters` | `rosters_table_bootstrap.sql` | `rosters_table_upsert.sql` |
 | `newapi.gamecenter` (+ etl_log + dependent views) | `gamecenter_table_bootstrap.sql` | `gamecenter_table_upsert.sql` |
 
-These upsert files already used `CREATE TABLE IF NOT EXISTS` and never had `DROP TABLE` against production data: `awards_table_upsert.sql`, `games_table_upsert.sql`, `teams_table_upsert.sql`, `draft_upsert.sql`, `player_contracts.sql`, `daily_game_rosters_upsert.sql`. `CREATE TABLE IF NOT EXISTS` for `*_etl_log` tables is safe and stays in the upsert files.
+These upsert files already used `CREATE TABLE IF NOT EXISTS` and never had `DROP TABLE` against production data: `awards_table_upsert.sql`, `games_table_upsert.sql`, `teams_table_upsert.sql`, `draft_upsert.sql`, `player_contracts.sql`, `daily_game_rosters_upsert.sql`, `sync_season_from_club_stats.sql`. `CREATE TABLE IF NOT EXISTS` for `*_etl_log` tables is safe and stays in the upsert files.
 
 `DROP FUNCTION` / `DROP PROCEDURE` in upsert files only replace routines (needed when return types change). They do not drop production tables.
