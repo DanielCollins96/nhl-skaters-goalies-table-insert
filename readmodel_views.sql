@@ -38,9 +38,18 @@ SELECT
     d."displayAbbrev",
     d."ordinalPick",
     ARRAY_AGG(DISTINCT d."draftYear") AS draft_seasons,
-    ARRAY_AGG(DISTINCT d."overallPick") AS draft_position
+    ARRAY_AGG(DISTINCT d."overallPick") AS draft_position,
+    -- Roster status and measurements from the latest landing scrape.
+    pc."isActive",
+    pc."currentTeamId",
+    pc."fullTeamName",
+    pc."heightInInches",
+    pc."heightInCentimeters",
+    pc."weightInPounds",
+    pc."weightInKilograms"
 FROM unique_players p
 LEFT JOIN newapi.drafts d ON p."playerId" = d."playerId"
+LEFT JOIN newapi.players_current pc ON p."playerId" = pc."playerId"
 GROUP BY
     p."playerId",
     CONCAT(p."firstName", ' ', p."lastName"),
@@ -50,7 +59,14 @@ GROUP BY
     p."sweaterNumber",
     p."shootsCatches",
     d."displayAbbrev",
-    d."ordinalPick";
+    d."ordinalPick",
+    pc."isActive",
+    pc."currentTeamId",
+    pc."fullTeamName",
+    pc."heightInInches",
+    pc."heightInCentimeters",
+    pc."weightInPounds",
+    pc."weightInKilograms";
 
 CREATE OR REPLACE VIEW readmodel.player_skater_stats AS
 WITH unique_players AS (
