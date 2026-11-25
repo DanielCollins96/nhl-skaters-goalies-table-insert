@@ -69,13 +69,13 @@ CREATE TABLE IF NOT EXISTS newapi.season_goalie (
     UNIQUE("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number)
 );
 
--- Create indexes for better performance
-CREATE INDEX IF NOT EXISTS idx_season_goalie_player_id ON newapi.season_goalie("playerId");
+-- Create indexes for better performance.
+-- No separate ("playerId"), occurrence, or is_active index: the UNIQUE key above already
+-- starts with "playerId" and covers the same columns, and with in-place updates
+-- there is one row per key, so it serves the active-row lookup too.
 CREATE INDEX IF NOT EXISTS idx_season_goalie_season ON newapi.season_goalie(season);
 CREATE INDEX IF NOT EXISTS idx_season_goalie_team ON newapi.season_goalie("teamName.default");
 CREATE INDEX IF NOT EXISTS idx_season_goalie_league ON newapi.season_goalie("leagueAbbrev");
-CREATE INDEX IF NOT EXISTS idx_season_goalie_occurrence ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
-CREATE INDEX IF NOT EXISTS idx_season_goalie_active ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.season_goalie_etl_log (
@@ -132,7 +132,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Enhanced function that logs results
+-- Upsert landing or club-stats rows into newapi.season_goalie.
+-- One row per key, updated in place. A NULL coming in keeps the stored value
+-- instead of wiping it, so the two sources can't overwrite each other's
+-- fields. Only the old rows from before this change have is_active = FALSE.
 CREATE OR REPLACE FUNCTION insert_season_goalies_from_staging_with_logging()
 RETURNS TABLE(
     total_processed INTEGER,
@@ -157,7 +160,7 @@ DECLARE
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
     
     -- Ensure missing columns exist in staging
     ALTER TABLE staging1.season_goalie ADD COLUMN IF NOT EXISTS "teamCommonName.cs" TEXT;
@@ -208,31 +211,12 @@ BEGIN
           AND NULLIF(TRIM(season::text), '') IS NOT NULL
           AND NULLIF(TRIM(sequence::text), '') IS NOT NULL
     LOOP
-        -- Cast every arg to the installed hash signature. Call-up scrapes
-        -- rebuild staging1.season_goalie with mixed bigint/text/float types,
-        -- and Postgres will not resolve the function without explicit casts.
-        new_hash := generate_season_goalie_data_hash(
-            rec."gamesPlayed"::double precision,
-            rec."goalsAgainst"::double precision,
-            rec."goalsAgainstAvg"::double precision,
-            rec.losses::double precision,
-            rec.shutouts::double precision,
-            rec.ties::double precision,
-            rec.wins::double precision,
-            rec.assists::double precision,
-            rec."gamesStarted"::double precision,
-            rec.goals::double precision,
-            rec.pim::double precision,
-            rec."savePctg"::double precision,
-            rec."shotsAgainst"::double precision,
-            rec."otLosses"::double precision,
-            rec."timeOnIce"::text
-        );
-        
+        -- Call-up scrapes rebuild staging1.season_goalie with mixed
+        -- bigint/text/float types, so every value is cast explicitly.
         found_match := FALSE;
-        
-        -- Check the active record for this player/season/sequence/team/gameType/league combination
-        SELECT * INTO matching_record FROM newapi.season_goalie 
+
+        -- The active row for this player/season/sequence/team/gameType/league.
+        SELECT * INTO matching_record FROM newapi.season_goalie
         WHERE "playerId" = rec."playerId"
         AND season = rec.season
         AND sequence = rec.sequence
@@ -241,30 +225,79 @@ BEGIN
         AND "leagueAbbrev" = rec."leagueAbbrev"
         AND is_active = TRUE
         LIMIT 1;
-        
+
         IF FOUND THEN
-            -- Check if this record has the same data (hash match)
-            IF matching_record.data_hash = new_hash THEN
-                -- Data hasn't changed - just update the timestamp
-                UPDATE newapi.season_goalie 
-                SET updated_at = CURRENT_TIMESTAMP
-                WHERE id = matching_record.id;
-                
+            found_match := TRUE;
+
+            -- Hash the row as it will look after the merge: the incoming value,
+            -- or the stored one when the incoming value is NULL.
+            new_hash := generate_season_goalie_data_hash(
+                COALESCE(rec."gamesPlayed"::double precision, matching_record."gamesPlayed"),
+                COALESCE(rec."goalsAgainst"::double precision, matching_record."goalsAgainst"),
+                COALESCE(rec."goalsAgainstAvg"::double precision, matching_record."goalsAgainstAvg"),
+                COALESCE(rec.losses::double precision, matching_record.losses),
+                COALESCE(rec.shutouts::double precision, matching_record.shutouts),
+                COALESCE(rec.ties::double precision, matching_record.ties),
+                COALESCE(rec.wins::double precision, matching_record.wins),
+                COALESCE(rec.assists::double precision, matching_record.assists),
+                COALESCE(rec."gamesStarted"::double precision, matching_record."gamesStarted"),
+                COALESCE(rec.goals::double precision, matching_record.goals),
+                COALESCE(rec.pim::double precision, matching_record.pim),
+                COALESCE(rec."savePctg"::double precision, matching_record."savePctg"),
+                COALESCE(rec."shotsAgainst"::double precision, matching_record."shotsAgainst"),
+                COALESCE(rec."otLosses"::double precision, matching_record."otLosses"),
+                COALESCE(NULLIF(TRIM(rec."timeOnIce"::text), ''), matching_record."timeOnIce")
+            );
+
+            IF matching_record.data_hash IS NOT DISTINCT FROM new_hash THEN
                 unchanged_count := unchanged_count + 1;
-                found_match := TRUE;
             ELSE
-                -- Data has changed - deactivate the old record and mark for new insert
-                UPDATE newapi.season_goalie 
-                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                UPDATE newapi.season_goalie SET
+                    "gamesPlayed" = COALESCE(rec."gamesPlayed"::double precision, "gamesPlayed"),
+                    "goalsAgainst" = COALESCE(rec."goalsAgainst"::double precision, "goalsAgainst"),
+                    "goalsAgainstAvg" = COALESCE(rec."goalsAgainstAvg"::double precision, "goalsAgainstAvg"),
+                    losses = COALESCE(rec.losses::double precision, losses),
+                    shutouts = COALESCE(rec.shutouts::double precision, shutouts),
+                    ties = COALESCE(rec.ties::double precision, ties),
+                    wins = COALESCE(rec.wins::double precision, wins),
+                    assists = COALESCE(rec.assists::double precision, assists),
+                    "gamesStarted" = COALESCE(rec."gamesStarted"::double precision, "gamesStarted"),
+                    goals = COALESCE(rec.goals::double precision, goals),
+                    pim = COALESCE(rec.pim::double precision, pim),
+                    "savePctg" = COALESCE(rec."savePctg"::double precision, "savePctg"),
+                    "shotsAgainst" = COALESCE(rec."shotsAgainst"::double precision, "shotsAgainst"),
+                    "otLosses" = COALESCE(rec."otLosses"::double precision, "otLosses"),
+                    "timeOnIce" = COALESCE(NULLIF(TRIM(rec."timeOnIce"::text), ''), "timeOnIce"),
+                    "teamCommonName.default" = COALESCE(rec."teamCommonName.default", "teamCommonName.default"),
+                    "teamPlaceNameWithPreposition.default" = COALESCE(rec."teamPlaceNameWithPreposition.default", "teamPlaceNameWithPreposition.default"),
+                    data_hash = new_hash,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = matching_record.id;
-                
+
                 updated_count := updated_count + 1;
-                found_match := FALSE; -- Will trigger insert of new active record
             END IF;
         END IF;
-        
-        -- If no matching hash was found, we need to insert
+
+        -- No active row yet: insert one.
         IF NOT found_match THEN
+            new_hash := generate_season_goalie_data_hash(
+                rec."gamesPlayed"::double precision,
+                rec."goalsAgainst"::double precision,
+                rec."goalsAgainstAvg"::double precision,
+                rec.losses::double precision,
+                rec.shutouts::double precision,
+                rec.ties::double precision,
+                rec.wins::double precision,
+                rec.assists::double precision,
+                rec."gamesStarted"::double precision,
+                rec.goals::double precision,
+                rec.pim::double precision,
+                rec."savePctg"::double precision,
+                rec."shotsAgainst"::double precision,
+                rec."otLosses"::double precision,
+                rec."timeOnIce"::text
+            );
+
             -- Get the next occurrence number for this combination
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
             FROM newapi.season_goalie 
@@ -322,7 +355,7 @@ BEGIN
         rows_processed := rows_processed + 1;
     END LOOP;
     
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
     
     -- Log the results

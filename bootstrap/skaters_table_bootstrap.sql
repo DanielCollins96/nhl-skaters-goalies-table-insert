@@ -69,11 +69,7 @@ CREATE TABLE newapi.skaters (
     UNIQUE("playerId", season, "gameType", "triCode", occurrence_number)
 );
 
--- Create indexes for better performance
-CREATE INDEX idx_skaters_player_id ON newapi.skaters("playerId");
-CREATE INDEX idx_skaters_season ON newapi.skaters(season);
-CREATE INDEX idx_skaters_team ON newapi.skaters("triCode");
-CREATE INDEX idx_skaters_occurrence ON newapi.skaters("playerId", season, "gameType", "triCode", occurrence_number);
-CREATE INDEX idx_skaters_active ON newapi.skaters("playerId", season, "gameType", "triCode", is_active) WHERE is_active = TRUE;
+-- No extra indexes: the UNIQUE key above starts with the lookup columns, and
+-- with in-place updates there is one row per key.
 
 COMMIT;

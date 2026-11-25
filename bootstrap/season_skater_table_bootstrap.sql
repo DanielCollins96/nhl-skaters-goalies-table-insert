@@ -89,11 +89,8 @@ CREATE TABLE newapi.season_skater (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_season_skater_player_id ON newapi.season_skater("playerId");
 CREATE INDEX idx_season_skater_season ON newapi.season_skater(season);
 CREATE INDEX idx_season_skater_team ON newapi.season_skater("teamName.default");
 CREATE INDEX idx_season_skater_league ON newapi.season_skater("leagueAbbrev");
-CREATE INDEX idx_season_skater_occurrence ON newapi.season_skater("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
-CREATE INDEX idx_season_skater_active ON newapi.season_skater("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
 
 COMMIT;

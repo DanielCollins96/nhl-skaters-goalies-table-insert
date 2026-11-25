@@ -57,7 +57,7 @@ DECLARE
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
 
     WITH src AS (
         SELECT
@@ -99,7 +99,7 @@ BEGIN
 
     v_unchanged := COALESCE(v_total, 0) - COALESCE(v_inserted, 0) - COALESCE(v_updated, 0);
 
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
 
     INSERT INTO newapi.franchises_etl_log (
@@ -230,7 +230,7 @@ DECLARE
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
 
     WITH src_raw AS (
         SELECT
@@ -349,7 +349,7 @@ BEGIN
 
     v_unchanged := COALESCE(v_total, 0) - COALESCE(v_inserted, 0) - COALESCE(v_updated, 0);
 
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
 
     INSERT INTO newapi.team_season_etl_log (
@@ -415,12 +415,10 @@ CREATE TABLE IF NOT EXISTS newapi.team_gametypes (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
-    -- Unique natural key for team game types per season
-    UNIQUE (season, "teamId")
+    -- One row per team per season. Keyed on triCode, which staging always
+    -- has; teamId is looked up and can be NULL, and NULLs never conflict.
+    UNIQUE (season, "triCode")
 );
-
-CREATE INDEX IF NOT EXISTS idx_team_gametypes_natural_key
-    ON newapi.team_gametypes (season, "teamId");
 
 CREATE INDEX IF NOT EXISTS idx_team_gametypes_tri_code
     ON newapi.team_gametypes ("triCode");
@@ -458,17 +456,25 @@ DECLARE
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
 
     WITH src AS (
-        SELECT
-            tg.season AS season,
+        SELECT DISTINCT ON (tg.season::text, tg."triCode")
+            tg.season::text AS season,
             tg."gameTypes" AS "gameTypes",
             tg."triCode" AS "triCode",
-            f.id AS "teamId"
+            t.id AS "teamId"
         FROM staging1.team_gametypes tg
-        LEFT JOIN newapi."franchises" f ON f."teamCommonName" = tg."triCode"
+        -- A triCode can map to two team ids (UTA); prefer the active one.
+        LEFT JOIN LATERAL (
+            SELECT id FROM newapi.teams
+            WHERE "triCode" = tg."triCode"
+            ORDER BY active DESC NULLS LAST, id DESC
+            LIMIT 1
+        ) t ON TRUE
         WHERE NULLIF(tg.season::text, '') IS NOT NULL
+          AND NULLIF(TRIM(tg."triCode"), '') IS NOT NULL
+        ORDER BY tg.season::text, tg."triCode"
     ), upsert AS (
         INSERT INTO newapi.team_gametypes (
             season, "gameTypes", "triCode", "teamId"
@@ -476,14 +482,14 @@ BEGIN
         SELECT
             s.season, s."gameTypes", s."triCode", s."teamId"
         FROM src s
-        ON CONFLICT (season, "teamId") DO UPDATE
+        ON CONFLICT (season, "triCode") DO UPDATE
         SET
             "gameTypes" = EXCLUDED."gameTypes",
-            "triCode" = EXCLUDED."triCode",
+            "teamId" = EXCLUDED."teamId",
             updated_at = CURRENT_TIMESTAMP
         WHERE (
             EXCLUDED."gameTypes" IS DISTINCT FROM newapi.team_gametypes."gameTypes"
-            OR EXCLUDED."triCode" IS DISTINCT FROM newapi.team_gametypes."triCode"
+            OR EXCLUDED."teamId" IS DISTINCT FROM newapi.team_gametypes."teamId"
         )
         RETURNING xmax
     ), counts AS (
@@ -499,7 +505,7 @@ BEGIN
 
     v_unchanged := COALESCE(v_total, 0) - COALESCE(v_inserted, 0) - COALESCE(v_updated, 0);
 
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
 
     INSERT INTO newapi.team_gametypes_etl_log (
@@ -607,7 +613,7 @@ DECLARE
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
 
     WITH src AS (
         SELECT
@@ -655,7 +661,7 @@ BEGIN
 
     v_unchanged := COALESCE(v_total, 0) - COALESCE(v_inserted, 0) - COALESCE(v_updated, 0);
 
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
 
     INSERT INTO newapi.teams_etl_log (

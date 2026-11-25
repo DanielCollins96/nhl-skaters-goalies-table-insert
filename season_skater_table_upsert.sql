@@ -70,13 +70,13 @@ CREATE TABLE IF NOT EXISTS newapi.season_skater (
     UNIQUE("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number)
 );
 
--- Create indexes for better performance
-CREATE INDEX IF NOT EXISTS idx_season_skater_player_id ON newapi.season_skater("playerId");
+-- Create indexes for better performance.
+-- No separate ("playerId"), occurrence, or is_active index: the UNIQUE key above already
+-- starts with "playerId" and covers the same columns, and with in-place updates
+-- there is one row per key, so it serves the active-row lookup too.
 CREATE INDEX IF NOT EXISTS idx_season_skater_season ON newapi.season_skater(season);
 CREATE INDEX IF NOT EXISTS idx_season_skater_team ON newapi.season_skater("teamName.default");
 CREATE INDEX IF NOT EXISTS idx_season_skater_league ON newapi.season_skater("leagueAbbrev");
-CREATE INDEX IF NOT EXISTS idx_season_skater_occurrence ON newapi.season_skater("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
-CREATE INDEX IF NOT EXISTS idx_season_skater_active ON newapi.season_skater("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.season_skater_etl_log (
@@ -135,7 +135,27 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
--- Enhanced function that logs results
+-- Average TOI in whole seconds. Landing sends 'MM:SS' ("23:40"); club-stats
+-- sends fractional seconds ("858.89"). Rounding makes the two agree, so they
+-- don't keep overwriting each other by a fraction of a second. Anything else
+-- is NULL.
+CREATE OR REPLACE FUNCTION toi_seconds(p_value TEXT)
+RETURNS DOUBLE PRECISION
+LANGUAGE sql IMMUTABLE AS $$
+    SELECT ROUND(CASE
+        WHEN TRIM(p_value) ~ '^\d+(\.\d+)?$' THEN TRIM(p_value)::double precision
+        WHEN TRIM(p_value) ~ '^\d+:\d{1,2}$' THEN
+            split_part(TRIM(p_value), ':', 1)::double precision * 60
+            + split_part(TRIM(p_value), ':', 2)::double precision
+    END)
+$$;
+
+-- Upsert landing or club-stats rows into newapi.season_skater.
+-- One row per key, updated in place. The two sources each leave some stats
+-- out (landing: none now that TOI parses; club-stats: powerPlayPoints,
+-- shorthandedPoints, sometimes plusMinus), so a NULL coming in keeps the
+-- stored value instead of wiping it. Only the old rows from before this
+-- change have is_active = FALSE; nothing new is deactivated.
 CREATE OR REPLACE FUNCTION insert_season_skaters_from_staging_with_logging()
 RETURNS TABLE(
     total_processed INTEGER,
@@ -154,14 +174,15 @@ DECLARE
     rec RECORD;
     matching_record RECORD;
     new_hash TEXT;
+    v_toi DOUBLE PRECISION;
     next_occurrence INTEGER;
     found_match BOOLEAN;
     start_time TIMESTAMP;
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
-    
+    start_time := clock_timestamp();
+
     -- Loop through each record in staging.
     -- Keys: NULLIF+TRIM then ::double precision::bigint so '' and '2024.0'
     -- do not abort the batch. Skip rows whose required keys are unusable.
@@ -192,34 +213,13 @@ BEGIN
           AND NULLIF(TRIM(season::text), '') IS NOT NULL
           AND NULLIF(TRIM(sequence::text), '') IS NOT NULL
     LOOP
-        -- Cast every arg to the installed hash signature. Staging types
-        -- from pandas/call-up scrapes can be bigint or text.
-        new_hash := generate_season_skater_data_hash(
-            rec.assists::double precision,
-            rec."gamesPlayed"::double precision,
-            rec.goals::double precision,
-            rec.pim::double precision,
-            rec."plusMinus"::double precision,
-            rec.points::double precision,
-            rec.shots::double precision,
-            rec."faceoffWinningPctg"::double precision,
-            rec."shootingPctg"::double precision,
-            rec."powerPlayGoals"::double precision,
-            rec."shorthandedGoals"::double precision,
-            rec."gameWinningGoals"::double precision,
-            CASE
-                WHEN rec."avgToi"::text ~ '^\d+(\.\d+)?$' THEN rec."avgToi"::double precision
-                ELSE 0::double precision
-            END,
-            0::double precision,
-            0::double precision,
-            0::double precision
-        );
-        
+        -- Staging types from pandas can be bigint, float or text, so every
+        -- value is cast explicitly.
+        v_toi := toi_seconds(rec."avgToi"::text);
         found_match := FALSE;
-        
-        -- Check the active record for this player/season/sequence/team/gameType/league combination
-        SELECT * INTO matching_record FROM newapi.season_skater 
+
+        -- The active row for this player/season/sequence/team/gameType/league.
+        SELECT * INTO matching_record FROM newapi.season_skater
         WHERE "playerId" = rec."playerId"
         AND season = rec.season
         AND sequence = rec.sequence
@@ -228,30 +228,82 @@ BEGIN
         AND "leagueAbbrev" = rec."leagueAbbrev"
         AND is_active = TRUE
         LIMIT 1;
-        
+
         IF FOUND THEN
-            -- Check if this record has the same data (hash match)
-            IF matching_record.data_hash = new_hash THEN
-                -- Data hasn't changed - just update the timestamp
-                UPDATE newapi.season_skater 
-                SET updated_at = CURRENT_TIMESTAMP
-                WHERE id = matching_record.id;
-                
+            found_match := TRUE;
+
+            -- Hash the row as it will look after the merge: the incoming value,
+            -- or the stored one when the incoming value is NULL.
+            new_hash := generate_season_skater_data_hash(
+                COALESCE(rec.assists::double precision, matching_record.assists),
+                COALESCE(rec."gamesPlayed"::double precision, matching_record."gamesPlayed"),
+                COALESCE(rec.goals::double precision, matching_record.goals),
+                COALESCE(rec.pim::double precision, matching_record.pim),
+                COALESCE(rec."plusMinus"::double precision, matching_record."plusMinus"),
+                COALESCE(rec.points::double precision, matching_record.points),
+                COALESCE(rec.shots::double precision, matching_record.shots),
+                COALESCE(rec."faceoffWinningPctg"::double precision, matching_record."faceoffWinningPctg"),
+                COALESCE(rec."shootingPctg"::double precision, matching_record."shootingPctg"),
+                COALESCE(rec."powerPlayGoals"::double precision, matching_record."powerPlayGoals"),
+                COALESCE(rec."shorthandedGoals"::double precision, matching_record."shorthandedGoals"),
+                COALESCE(rec."gameWinningGoals"::double precision, matching_record."gameWinningGoals"),
+                COALESCE(v_toi, matching_record."avgToi"),
+                COALESCE(rec."otGoals"::double precision, matching_record."otGoals"),
+                COALESCE(rec."powerPlayPoints"::double precision, matching_record."powerPlayPoints"),
+                COALESCE(rec."shorthandedPoints"::double precision, matching_record."shorthandedPoints")
+            );
+
+            IF matching_record.data_hash IS NOT DISTINCT FROM new_hash THEN
                 unchanged_count := unchanged_count + 1;
-                found_match := TRUE;
             ELSE
-                -- Data has changed - deactivate the old record and mark for new insert
-                UPDATE newapi.season_skater 
-                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                UPDATE newapi.season_skater SET
+                    assists = COALESCE(rec.assists::double precision::bigint, assists),
+                    "gamesPlayed" = COALESCE(rec."gamesPlayed"::double precision::bigint, "gamesPlayed"),
+                    goals = COALESCE(rec.goals::double precision::bigint, goals),
+                    pim = COALESCE(rec.pim::double precision::bigint, pim),
+                    "plusMinus" = COALESCE(rec."plusMinus"::double precision::bigint, "plusMinus"),
+                    points = COALESCE(rec.points::double precision::bigint, points),
+                    "faceoffWinningPctg" = COALESCE(rec."faceoffWinningPctg"::double precision, "faceoffWinningPctg"),
+                    "shootingPctg" = COALESCE(rec."shootingPctg"::double precision, "shootingPctg"),
+                    shots = COALESCE(rec.shots::double precision, shots),
+                    "powerPlayGoals" = COALESCE(rec."powerPlayGoals"::double precision, "powerPlayGoals"),
+                    "shorthandedGoals" = COALESCE(rec."shorthandedGoals"::double precision, "shorthandedGoals"),
+                    "gameWinningGoals" = COALESCE(rec."gameWinningGoals"::double precision, "gameWinningGoals"),
+                    "avgToi" = COALESCE(v_toi, "avgToi"),
+                    "otGoals" = COALESCE(rec."otGoals"::double precision, "otGoals"),
+                    "powerPlayPoints" = COALESCE(rec."powerPlayPoints"::double precision, "powerPlayPoints"),
+                    "shorthandedPoints" = COALESCE(rec."shorthandedPoints"::double precision, "shorthandedPoints"),
+                    "teamCommonName.default" = COALESCE(rec."teamCommonName.default", "teamCommonName.default"),
+                    "teamPlaceNameWithPreposition.default" = COALESCE(rec."teamPlaceNameWithPreposition.default", "teamPlaceNameWithPreposition.default"),
+                    data_hash = new_hash,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = matching_record.id;
-                
+
                 updated_count := updated_count + 1;
-                found_match := FALSE; -- Will trigger insert of new active record
             END IF;
         END IF;
-        
-        -- If no matching hash was found, we need to insert
+
+        -- No active row yet: insert one.
         IF NOT found_match THEN
+            new_hash := generate_season_skater_data_hash(
+                rec.assists::double precision,
+                rec."gamesPlayed"::double precision,
+                rec.goals::double precision,
+                rec.pim::double precision,
+                rec."plusMinus"::double precision,
+                rec.points::double precision,
+                rec.shots::double precision,
+                rec."faceoffWinningPctg"::double precision,
+                rec."shootingPctg"::double precision,
+                rec."powerPlayGoals"::double precision,
+                rec."shorthandedGoals"::double precision,
+                rec."gameWinningGoals"::double precision,
+                v_toi,
+                rec."otGoals"::double precision,
+                rec."powerPlayPoints"::double precision,
+                rec."shorthandedPoints"::double precision
+            );
+
             -- Get the next occurrence number for this combination
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
             FROM newapi.season_skater 
@@ -292,10 +344,7 @@ BEGIN
                 rec."teamCommonName.sk", rec."teamCommonName.sv", rec."teamName.cs",
                 rec."teamName.de", rec."teamName.fi", rec."teamName.sk", rec."teamName.sv",
                 rec."teamPlaceNameWithPreposition.default",
-                CASE
-                    WHEN rec."avgToi"::text ~ '^\d+(\.\d+)?$' THEN rec."avgToi"::double precision
-                    ELSE NULL
-                END,
+                v_toi,
                 rec."otGoals"::double precision, rec."powerPlayPoints"::double precision,
                 rec."shorthandedPoints"::double precision, rec."teamName.fr",
                 rec."teamPlaceNameWithPreposition.fr", rec."teamCommonName.fr",
@@ -315,7 +364,7 @@ BEGIN
         rows_processed := rows_processed + 1;
     END LOOP;
     
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
     
     -- Log the results

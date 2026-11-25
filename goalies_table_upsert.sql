@@ -51,12 +51,8 @@ CREATE TABLE IF NOT EXISTS newapi.goalies (
     UNIQUE("playerId", season, "gameType", team, occurrence_number)
 );
 
--- Create indexes for better performance
-CREATE INDEX IF NOT EXISTS idx_goalies_player_id ON newapi.goalies("playerId");
-CREATE INDEX IF NOT EXISTS idx_goalies_season ON newapi.goalies(season);
-CREATE INDEX IF NOT EXISTS idx_goalies_team ON newapi.goalies(team);
-CREATE INDEX IF NOT EXISTS idx_goalies_occurrence ON newapi.goalies("playerId", season, "gameType", team, occurrence_number);
-CREATE INDEX IF NOT EXISTS idx_goalies_active ON newapi.goalies("playerId", season, "gameType", team, is_active) WHERE is_active = TRUE;
+-- No extra indexes: the UNIQUE key above starts with the lookup columns, and
+-- with in-place updates there is one row per key.
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.goalies_etl_log (
@@ -142,7 +138,7 @@ DECLARE
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
     
     -- Ensure ties column exists in staging (may not exist for newer seasons)
     ALTER TABLE staging1.goalies ADD COLUMN IF NOT EXISTS ties DOUBLE PRECISION;
@@ -179,11 +175,8 @@ BEGIN
         IF FOUND THEN
             -- Check if this record has the same data (hash match)
             IF matching_record.data_hash = new_hash THEN
-                -- Data hasn't changed - just update the timestamp
-                UPDATE newapi.goalies 
-                SET updated_at = CURRENT_TIMESTAMP
-                WHERE id = matching_record.id;
-                
+                -- Data hasn't changed - leave the row alone. Rewriting it
+                -- just to bump updated_at bloats the table every run.
                 unchanged_count := unchanged_count + 1;
                 found_match := TRUE;
             ELSE
@@ -255,7 +248,7 @@ BEGIN
         rows_processed := rows_processed + 1;
     END LOOP;
     
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
     
     -- Log the results

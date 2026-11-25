@@ -150,6 +150,9 @@ WITH club AS (
         UPPER(TRIM(s."triCode")) AS tricode
     FROM newapi.skaters s
     WHERE s.is_active = TRUE
+      -- Current season only. Landing owns past seasons; re-pushing them
+      -- from club-stats every run is what made rows flip-flop.
+      AND s.season = (SELECT MAX(x.season) FROM newapi.skaters x WHERE x.is_active = TRUE)
       AND newapi.club_stats_bigint(s."playerId"::text) IS NOT NULL
       AND newapi.club_stats_bigint(s."gameType"::text) IS NOT NULL
       AND newapi.club_stats_bigint(s.season::text) IS NOT NULL
@@ -429,6 +432,8 @@ WITH club AS (
         UPPER(TRIM(g.team)) AS tricode
     FROM newapi.goalies g
     WHERE g.is_active = TRUE
+      -- Current season only (see season_skater_from_club_stats).
+      AND g.season = (SELECT MAX(x.season) FROM newapi.goalies x WHERE x.is_active = TRUE)
       AND newapi.club_stats_bigint(g."playerId"::text) IS NOT NULL
       AND newapi.club_stats_bigint(g."gameType"::text) IS NOT NULL
       AND newapi.club_stats_bigint(g.season::text) IS NOT NULL

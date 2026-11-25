@@ -88,11 +88,8 @@ CREATE TABLE newapi.season_goalie (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_season_goalie_player_id ON newapi.season_goalie("playerId");
 CREATE INDEX idx_season_goalie_season ON newapi.season_goalie(season);
 CREATE INDEX idx_season_goalie_team ON newapi.season_goalie("teamName.default");
 CREATE INDEX idx_season_goalie_league ON newapi.season_goalie("leagueAbbrev");
-CREATE INDEX idx_season_goalie_occurrence ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", occurrence_number);
-CREATE INDEX idx_season_goalie_active ON newapi.season_goalie("playerId", season, sequence, "teamName.default", "gameTypeId", "leagueAbbrev", is_active) WHERE is_active = TRUE;
 
 COMMIT;

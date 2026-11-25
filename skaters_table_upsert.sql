@@ -50,12 +50,8 @@ CREATE TABLE IF NOT EXISTS newapi.skaters (
     UNIQUE("playerId", season, "gameType", "triCode", occurrence_number)
 );
 
--- Create indexes for better performance
-CREATE INDEX IF NOT EXISTS idx_skaters_player_id ON newapi.skaters("playerId");
-CREATE INDEX IF NOT EXISTS idx_skaters_season ON newapi.skaters(season);
-CREATE INDEX IF NOT EXISTS idx_skaters_team ON newapi.skaters("triCode");
-CREATE INDEX IF NOT EXISTS idx_skaters_occurrence ON newapi.skaters("playerId", season, "gameType", "triCode", occurrence_number);
-CREATE INDEX IF NOT EXISTS idx_skaters_active ON newapi.skaters("playerId", season, "gameType", "triCode", is_active) WHERE is_active = TRUE;
+-- No extra indexes: the UNIQUE key above starts with the lookup columns, and
+-- with in-place updates there is one row per key.
 
 -- Function to generate a hash of the important data fields
 CREATE OR REPLACE FUNCTION generate_skater_data_hash(
@@ -149,21 +145,41 @@ BEGIN
         IF FOUND THEN
             -- Check if this record has the same data (hash match)
             IF matching_record.data_hash = new_hash THEN
-                -- Data hasn't changed - just update the timestamp
-                UPDATE newapi.skaters 
-                SET updated_at = CURRENT_TIMESTAMP
-                WHERE id = matching_record.id;
-                
+                -- Data hasn't changed - leave the row alone. Rewriting it
+                -- just to bump updated_at bloats the table every run.
                 unchanged_count := unchanged_count + 1;
                 found_match := TRUE;
             ELSE
-                -- Data has changed - deactivate the old record and mark for new insert
-                UPDATE newapi.skaters 
-                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                -- Data has changed - update the active row in place. Keeping
+                -- every old version is what grew this table; nothing reads them.
+                UPDATE newapi.skaters
+                SET
+                    headshot = rec.headshot,
+                    "firstName" = rec."firstName",
+                    "lastName" = rec."lastName",
+                    "fullName" = rec."fullName",
+                    "positionCode" = rec."positionCode",
+                    "gamesPlayed" = rec."gamesPlayed",
+                    goals = rec.goals,
+                    assists = rec.assists,
+                    points = rec.points,
+                    "plusMinus" = rec."plusMinus",
+                    "penaltyMinutes" = rec."penaltyMinutes",
+                    "powerPlayGoals" = rec."powerPlayGoals",
+                    "shorthandedGoals" = rec."shorthandedGoals",
+                    "gameWinningGoals" = rec."gameWinningGoals",
+                    "overtimeGoals" = rec."overtimeGoals",
+                    shots = rec.shots,
+                    "shootingPctg" = rec."shootingPctg",
+                    "avgTimeOnIcePerGame" = rec."avgTimeOnIcePerGame",
+                    "avgShiftsPerGame" = rec."avgShiftsPerGame",
+                    "faceoffWinPctg" = rec."faceoffWinPctg",
+                    data_hash = new_hash,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = matching_record.id;
-                
+
                 updated_count := updated_count + 1;
-                found_match := FALSE; -- Will trigger insert of new active record
+                found_match := TRUE;
             END IF;
         END IF;
         
@@ -333,7 +349,7 @@ DECLARE
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
     
     -- Loop through each record in staging
     FOR rec IN 
@@ -367,21 +383,41 @@ BEGIN
         IF FOUND THEN
             -- Check if this record has the same data (hash match)
             IF matching_record.data_hash = new_hash THEN
-                -- Data hasn't changed - just update the timestamp
-                UPDATE newapi.skaters 
-                SET updated_at = CURRENT_TIMESTAMP
-                WHERE id = matching_record.id;
-                
+                -- Data hasn't changed - leave the row alone. Rewriting it
+                -- just to bump updated_at bloats the table every run.
                 unchanged_count := unchanged_count + 1;
                 found_match := TRUE;
             ELSE
-                -- Data has changed - deactivate the old record and mark for new insert
-                UPDATE newapi.skaters 
-                SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+                -- Data has changed - update the active row in place. Keeping
+                -- every old version is what grew this table; nothing reads them.
+                UPDATE newapi.skaters
+                SET
+                    headshot = rec.headshot,
+                    "firstName" = rec."firstName",
+                    "lastName" = rec."lastName",
+                    "fullName" = rec."fullName",
+                    "positionCode" = rec."positionCode",
+                    "gamesPlayed" = rec."gamesPlayed",
+                    goals = rec.goals,
+                    assists = rec.assists,
+                    points = rec.points,
+                    "plusMinus" = rec."plusMinus",
+                    "penaltyMinutes" = rec."penaltyMinutes",
+                    "powerPlayGoals" = rec."powerPlayGoals",
+                    "shorthandedGoals" = rec."shorthandedGoals",
+                    "gameWinningGoals" = rec."gameWinningGoals",
+                    "overtimeGoals" = rec."overtimeGoals",
+                    shots = rec.shots,
+                    "shootingPctg" = rec."shootingPctg",
+                    "avgTimeOnIcePerGame" = rec."avgTimeOnIcePerGame",
+                    "avgShiftsPerGame" = rec."avgShiftsPerGame",
+                    "faceoffWinPctg" = rec."faceoffWinPctg",
+                    data_hash = new_hash,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = matching_record.id;
-                
+
                 updated_count := updated_count + 1;
-                found_match := FALSE; -- Will trigger insert of new active record
+                found_match := TRUE;
             END IF;
         END IF;
         
@@ -422,7 +458,7 @@ BEGIN
         rows_processed := rows_processed + 1;
     END LOOP;
     
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
     
     -- Log the results

@@ -69,11 +69,7 @@ CREATE TABLE newapi.goalies (
     UNIQUE("playerId", season, "gameType", team, occurrence_number)
 );
 
--- Create indexes for better performance
-CREATE INDEX idx_goalies_player_id ON newapi.goalies("playerId");
-CREATE INDEX idx_goalies_season ON newapi.goalies(season);
-CREATE INDEX idx_goalies_team ON newapi.goalies(team);
-CREATE INDEX idx_goalies_occurrence ON newapi.goalies("playerId", season, "gameType", team, occurrence_number);
-CREATE INDEX idx_goalies_active ON newapi.goalies("playerId", season, "gameType", team, is_active) WHERE is_active = TRUE;
+-- No extra indexes: the UNIQUE key above starts with the lookup columns, and
+-- with in-place updates there is one row per key.
 
 COMMIT;
