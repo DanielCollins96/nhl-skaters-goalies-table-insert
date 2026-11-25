@@ -228,9 +228,49 @@ BEGIN
         AND "leagueAbbrev" = rec."leagueAbbrev"
         AND is_active = TRUE
         LIMIT 1;
+        found_match := FOUND;
 
-        IF FOUND THEN
-            found_match := TRUE;
+        -- Same team under another sequence: club-stats added this stint after
+        -- a trade and guessed its number before landing had it. Take this
+        -- row's number instead of adding a second row for the same stint,
+        -- unless this staging batch also has that other sequence (a player
+        -- who returned to a team has two real stints with it).
+        IF NOT found_match THEN
+            SELECT ss.* INTO matching_record FROM newapi.season_skater ss
+            WHERE ss."playerId" = rec."playerId"
+            AND ss.season = rec.season
+            AND ss."teamName.default" = rec."teamName.default"
+            AND ss."gameTypeId" = rec."gameTypeId"
+            AND ss."leagueAbbrev" = rec."leagueAbbrev"
+            AND ss.is_active = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM staging1.season_skater st
+                WHERE NULLIF(TRIM(st."playerId"::text), '')::double precision::bigint = ss."playerId"
+                AND NULLIF(TRIM(st.season::text), '')::double precision::bigint = ss.season
+                AND NULLIF(TRIM(st.sequence::text), '')::double precision::bigint = ss.sequence
+                AND NULLIF(TRIM(st."gameTypeId"::text), '')::double precision::bigint = ss."gameTypeId"
+                AND st."teamName.default" = ss."teamName.default"
+                AND st."leagueAbbrev" = ss."leagueAbbrev"
+            )
+            ORDER BY ss.sequence
+            LIMIT 1;
+
+            IF FOUND THEN
+                UPDATE newapi.season_skater SET sequence = rec.sequence, updated_at = CURRENT_TIMESTAMP
+                WHERE id = matching_record.id;
+                matching_record.sequence := rec.sequence;
+                found_match := TRUE;
+            END IF;
+        END IF;
+
+        IF found_match THEN
+            -- Landing's MM:SS and club-stats' fractional seconds can round a
+            -- second apart. Keep the stored TOI inside that, or the two
+            -- sources rewrite the row every run.
+            IF v_toi IS NOT NULL AND matching_record."avgToi" IS NOT NULL
+               AND ABS(v_toi - matching_record."avgToi") <= 1 THEN
+                v_toi := matching_record."avgToi";
+            END IF;
 
             -- Hash the row as it will look after the merge: the incoming value,
             -- or the stored one when the incoming value is NULL.

@@ -169,7 +169,15 @@ SELECT
     c."plusMinus",
     c.points,
     c.season,
-    COALESCE(existing.sequence, 1::bigint) AS sequence,
+    -- No row for this team yet (a trade landing hasn't picked up): the next
+    -- NHL stint. NHL sequences run 1, 2, 3; other leagues start at 11+.
+    COALESCE(
+        existing.sequence,
+        nxt.max_seq + ROW_NUMBER() OVER (
+            PARTITION BY c."playerId", c.season, c."gameTypeId", existing.sequence IS NULL
+            ORDER BY c.tricode
+        )
+    ) AS sequence,
     COALESCE(existing."teamName.default", t."fullName") AS "teamName.default",
     COALESCE(existing."teamCommonName.default", t."teamCommonName") AS "teamCommonName.default",
     c."faceoffWinningPctg",
@@ -201,15 +209,29 @@ LEFT JOIN LATERAL (
           OR ss."teamName.default" = t."teamCommonName"
           OR UPPER(TRIM(et."rawTricode")) = c.tricode
           OR UPPER(TRIM(et."triCode")) = c.tricode
-          OR NOT EXISTS (
-              SELECT 1
-              FROM newapi.season_skater other
-              WHERE other.is_active = TRUE
-                AND other."playerId" = c."playerId"
-                AND other.season = c.season
-                AND other."gameTypeId" = c."gameTypeId"
-                AND other."leagueAbbrev" = 'NHL'
-                AND other."teamName.default" IS DISTINCT FROM ss."teamName.default"
+          OR (
+              -- The player's only NHL row, whatever its team name says...
+              NOT EXISTS (
+                  SELECT 1
+                  FROM newapi.season_skater other
+                  WHERE other.is_active = TRUE
+                    AND other."playerId" = c."playerId"
+                    AND other.season = c.season
+                    AND other."gameTypeId" = c."gameTypeId"
+                    AND other."leagueAbbrev" = 'NHL'
+                    AND other."teamName.default" IS DISTINCT FROM ss."teamName.default"
+              )
+              -- ...but only if club-stats has them on one team. Two teams is a
+              -- trade, and each team gets its own row instead of both
+              -- overwriting this one.
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM club c2
+                  WHERE c2."playerId" = c."playerId"
+                    AND c2.season = c.season
+                    AND c2."gameTypeId" = c."gameTypeId"
+                    AND c2.tricode <> c.tricode
+              )
           )
       )
     ORDER BY
@@ -221,6 +243,15 @@ LEFT JOIN LATERAL (
         ss.sequence
     LIMIT 1
 ) existing ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COALESCE(MAX(ss.sequence), 0) AS max_seq
+    FROM newapi.season_skater ss
+    WHERE ss.is_active = TRUE
+      AND ss."playerId" = c."playerId"
+      AND ss.season = c.season
+      AND ss."gameTypeId" = c."gameTypeId"
+      AND ss."leagueAbbrev" = 'NHL'
+) nxt ON TRUE
 WHERE COALESCE(existing."teamName.default", t."fullName") IS NOT NULL;
 
 CREATE OR REPLACE VIEW newapi.season_skater_missing_from_club_stats AS
@@ -448,7 +479,14 @@ SELECT
     c."leagueAbbrev",
     c.losses,
     c.season,
-    COALESCE(existing.sequence, 1::bigint) AS sequence,
+    -- No row for this team yet: the next NHL stint (see season_skater_from_club_stats).
+    COALESCE(
+        existing.sequence,
+        nxt.max_seq + ROW_NUMBER() OVER (
+            PARTITION BY c."playerId", c.season, c."gameTypeId", existing.sequence IS NULL
+            ORDER BY c.tricode
+        )
+    ) AS sequence,
     c.shutouts,
     c.ties,
     c."timeOnIce",
@@ -481,15 +519,26 @@ LEFT JOIN LATERAL (
           OR sg."teamName.default" = t."teamCommonName"
           OR UPPER(TRIM(et."rawTricode")) = c.tricode
           OR UPPER(TRIM(et."triCode")) = c.tricode
-          OR NOT EXISTS (
-              SELECT 1
-              FROM newapi.season_goalie other
-              WHERE other.is_active = TRUE
-                AND other."playerId" = c."playerId"
-                AND other.season = c.season
-                AND other."gameTypeId" = c."gameTypeId"
-                AND other."leagueAbbrev" = 'NHL'
-                AND other."teamName.default" IS DISTINCT FROM sg."teamName.default"
+          OR (
+              -- Only NHL row, and club-stats has one team (see skaters).
+              NOT EXISTS (
+                  SELECT 1
+                  FROM newapi.season_goalie other
+                  WHERE other.is_active = TRUE
+                    AND other."playerId" = c."playerId"
+                    AND other.season = c.season
+                    AND other."gameTypeId" = c."gameTypeId"
+                    AND other."leagueAbbrev" = 'NHL'
+                    AND other."teamName.default" IS DISTINCT FROM sg."teamName.default"
+              )
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM club c2
+                  WHERE c2."playerId" = c."playerId"
+                    AND c2.season = c.season
+                    AND c2."gameTypeId" = c."gameTypeId"
+                    AND c2.tricode <> c.tricode
+              )
           )
       )
     ORDER BY
@@ -501,6 +550,15 @@ LEFT JOIN LATERAL (
         sg.sequence
     LIMIT 1
 ) existing ON TRUE
+LEFT JOIN LATERAL (
+    SELECT COALESCE(MAX(sg.sequence), 0) AS max_seq
+    FROM newapi.season_goalie sg
+    WHERE sg.is_active = TRUE
+      AND sg."playerId" = c."playerId"
+      AND sg.season = c.season
+      AND sg."gameTypeId" = c."gameTypeId"
+      AND sg."leagueAbbrev" = 'NHL'
+) nxt ON TRUE
 WHERE COALESCE(existing."teamName.default", t."fullName") IS NOT NULL;
 
 CREATE OR REPLACE VIEW newapi.season_goalie_missing_from_club_stats AS

@@ -225,9 +225,39 @@ BEGIN
         AND "leagueAbbrev" = rec."leagueAbbrev"
         AND is_active = TRUE
         LIMIT 1;
+        found_match := FOUND;
 
-        IF FOUND THEN
-            found_match := TRUE;
+        -- Same team under another sequence: take this row's number instead of
+        -- adding a second row for the same stint (see season_skater).
+        IF NOT found_match THEN
+            SELECT sg.* INTO matching_record FROM newapi.season_goalie sg
+            WHERE sg."playerId" = rec."playerId"
+            AND sg.season = rec.season
+            AND sg."teamName.default" = rec."teamName.default"
+            AND sg."gameTypeId" = rec."gameTypeId"
+            AND sg."leagueAbbrev" = rec."leagueAbbrev"
+            AND sg.is_active = TRUE
+            AND NOT EXISTS (
+                SELECT 1 FROM staging1.season_goalie st
+                WHERE NULLIF(TRIM(st."playerId"::text), '')::double precision::bigint = sg."playerId"
+                AND NULLIF(TRIM(st.season::text), '')::double precision::bigint = sg.season
+                AND NULLIF(TRIM(st.sequence::text), '')::double precision::bigint = sg.sequence
+                AND NULLIF(TRIM(st."gameTypeId"::text), '')::double precision::bigint = sg."gameTypeId"
+                AND st."teamName.default" = sg."teamName.default"
+                AND st."leagueAbbrev" = sg."leagueAbbrev"
+            )
+            ORDER BY sg.sequence
+            LIMIT 1;
+
+            IF FOUND THEN
+                UPDATE newapi.season_goalie SET sequence = rec.sequence, updated_at = CURRENT_TIMESTAMP
+                WHERE id = matching_record.id;
+                matching_record.sequence := rec.sequence;
+                found_match := TRUE;
+            END IF;
+        END IF;
+
+        IF found_match THEN
 
             -- Hash the row as it will look after the merge: the incoming value,
             -- or the stored one when the incoming value is NULL.
