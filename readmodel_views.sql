@@ -22,10 +22,10 @@ WITH unique_players AS (
         p."sweaterNumber",
         p."shootsCatches"
     FROM newapi.players p
+    -- newapi.players keeps every version of a bio; take the newest.
     ORDER BY
         p."playerId",
-        p."isActive" DESC NULLS LAST,
-        p."birthCountry" ASC NULLS LAST
+        p.occurrence_number DESC
 )
 SELECT
     p."playerId",
@@ -75,10 +75,10 @@ WITH unique_players AS (
         p."birthDate",
         p."birthCountry"
     FROM newapi.players p
+    -- newapi.players keeps every version of a bio; take the newest.
     ORDER BY
         p."playerId",
-        p."isActive" DESC NULLS LAST,
-        p."birthCountry" ASC NULLS LAST
+        p.occurrence_number DESC
 ),
 playoff_stats AS (
     SELECT
@@ -158,10 +158,10 @@ WITH unique_players AS (
         p."birthDate",
         p."birthCountry"
     FROM newapi.players p
+    -- newapi.players keeps every version of a bio; take the newest.
     ORDER BY
         p."playerId",
-        p."isActive" DESC NULLS LAST,
-        p."birthCountry" ASC NULLS LAST
+        p.occurrence_number DESC
 ),
 playoff_stats AS (
     SELECT
@@ -308,10 +308,10 @@ WITH unique_players AS (
         p."birthCountry",
         p."position"
     FROM newapi.players p
+    -- newapi.players keeps every version of a bio; take the newest.
     ORDER BY
         p."playerId",
-        p."isActive" DESC NULLS LAST,
-        p."birthCountry" ASC NULLS LAST
+        p.occurrence_number DESC
 ),
 combined_data AS (
     SELECT
@@ -395,10 +395,10 @@ WITH unique_players AS (
         p."birthDate",
         p."birthCountry"
     FROM newapi.players p
+    -- newapi.players keeps every version of a bio; take the newest.
     ORDER BY
         p."playerId",
-        p."isActive" DESC NULLS LAST,
-        p."birthCountry" ASC NULLS LAST
+        p.occurrence_number DESC
 ),
 combined_goalie_data AS (
     SELECT
@@ -604,6 +604,7 @@ leader_rows AS (
             "lastName",
             "position"
         FROM newapi.players
+        ORDER BY "playerId", occurrence_number DESC
     ) p ON p."playerId" = c."playerId"
     LEFT JOIN newapi.teams t ON t."fullName" = c."teamName" AND t.active = true
 )
@@ -668,6 +669,7 @@ leader_rows AS (
             "firstName",
             "lastName"
         FROM newapi.players
+        ORDER BY "playerId", occurrence_number DESC
     ) p
     JOIN goalie_totals g ON p."playerId" = g."playerId"
     LEFT JOIN newapi.teams t ON t."fullName" = g."teamName" AND t.active = true
@@ -791,7 +793,7 @@ unique_players AS (
     LEFT JOIN newapi.teams t ON r."teamAbbreviation" = t."rawTricode"
     LEFT JOIN skater_stats sk ON p."playerId" = sk."playerId"
     LEFT JOIN goalie_stats g ON p."playerId" = g."playerId"
-    ORDER BY p."playerId"
+    ORDER BY p."playerId", p.occurrence_number DESC, r.updated_at DESC NULLS LAST
 )
 SELECT
     *,
