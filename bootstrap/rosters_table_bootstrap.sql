@@ -62,10 +62,8 @@ CREATE TABLE newapi.current_rosters (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_rosters_player_id ON newapi.current_rosters("playerId");
 CREATE INDEX idx_rosters_team ON newapi.current_rosters("teamAbbreviation");
 CREATE INDEX idx_rosters_active ON newapi.current_rosters(active);
-CREATE INDEX idx_rosters_occurrence ON newapi.current_rosters("playerId", "teamAbbreviation", occurrence_number);
 CREATE INDEX idx_rosters_position ON newapi.current_rosters("positionGroup", "positionCode");
 
 COMMIT;

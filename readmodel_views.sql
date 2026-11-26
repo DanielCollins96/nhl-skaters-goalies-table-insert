@@ -793,7 +793,8 @@ unique_players AS (
     LEFT JOIN newapi.teams t ON r."teamAbbreviation" = t."rawTricode"
     LEFT JOIN skater_stats sk ON p."playerId" = sk."playerId"
     LEFT JOIN goalie_stats g ON p."playerId" = g."playerId"
-    ORDER BY p."playerId", p.occurrence_number DESC, r.updated_at DESC NULLS LAST
+    -- UTA maps to both Utah teams; prefer the active one.
+    ORDER BY p."playerId", p.occurrence_number DESC, r.updated_at DESC NULLS LAST, t.active DESC NULLS LAST
 )
 SELECT
     *,

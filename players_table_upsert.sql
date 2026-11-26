@@ -53,10 +53,10 @@ CREATE TABLE IF NOT EXISTS newapi.players (
     UNIQUE("playerId", occurrence_number)
 );
 
--- Create indexes for better performance
-CREATE INDEX IF NOT EXISTS idx_players_player_id ON newapi.players("playerId");
+-- Create indexes for better performance.
+-- No separate ("playerId") or occurrence index: the UNIQUE key above starts
+-- with "playerId" and covers both.
 CREATE INDEX IF NOT EXISTS idx_players_current_team ON newapi.players("currentTeamAbbrev");
-CREATE INDEX IF NOT EXISTS idx_players_occurrence ON newapi.players("playerId", occurrence_number);
 
 -- Create a table to store ETL run statistics
 CREATE TABLE IF NOT EXISTS newapi.players_etl_log (
@@ -156,7 +156,7 @@ DECLARE
     end_time TIMESTAMP;
     duration INTERVAL;
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
     
     -- Loop through each record in staging
     FOR rec IN 
@@ -206,28 +206,62 @@ BEGIN
             rec.draftOverallPick::DOUBLE PRECISION
         );
         
-        found_match := FALSE;
-        
-        -- Check all existing records for this player
-        FOR matching_record IN
-            SELECT * FROM newapi.players 
-            WHERE "playerId" = rec."playerId"
-            ORDER BY occurrence_number
-        LOOP
-            -- Check if this record has the same data (hash match)
-            IF matching_record.data_hash = new_hash THEN
-                -- Data hasn't changed - just update the timestamp
-                UPDATE newapi.players 
-                SET updated_at = CURRENT_TIMESTAMP
-                WHERE id = matching_record.id;
-                
+        -- One row per player, updated in place. Inserting a new version on
+        -- every bio change left several rows per player and nothing marking
+        -- which one was current. (Before the 2026-11-26 migration, the most
+        -- recently touched row was the current one.)
+        SELECT * INTO matching_record FROM newapi.players
+        WHERE "playerId" = rec."playerId"
+        ORDER BY updated_at DESC NULLS LAST, occurrence_number DESC
+        LIMIT 1;
+        found_match := FOUND;
+
+        IF found_match THEN
+            -- The hash leaves out names and slug, so check those too.
+            IF matching_record.data_hash IS NOT DISTINCT FROM new_hash
+               AND matching_record."firstName" IS NOT DISTINCT FROM rec.firstName
+               AND matching_record."lastName" IS NOT DISTINCT FROM rec.lastName
+               AND matching_record."playerSlug" IS NOT DISTINCT FROM rec."playerSlug" THEN
+                -- Unchanged: leave the row alone (no updated_at bump).
                 unchanged_count := unchanged_count + 1;
-                found_match := TRUE;
-                EXIT; -- Break out of the loop
+            ELSE
+                UPDATE newapi.players SET
+                    "isActive" = rec."isActive",
+                    "currentTeamId" = rec."currentTeamId"::BIGINT,
+                    "currentTeamAbbrev" = rec."currentTeamAbbrev",
+                    "fullTeamName" = rec.fullTeamName,
+                    "firstName" = rec.firstName,
+                    "lastName" = rec.lastName,
+                    "sweaterNumber" = rec."sweaterNumber"::INTEGER,
+                    "position" = rec."position",
+                    headshot = rec.headshot,
+                    "heroImage" = rec."heroImage",
+                    "heightInInches" = rec."heightInInches",
+                    "heightInCentimeters" = rec."heightInCentimeters",
+                    "weightInPounds" = rec."weightInPounds",
+                    "weightInKilograms" = rec."weightInKilograms",
+                    "birthDate" = CASE WHEN rec."birthDate" IS NOT NULL AND rec."birthDate" != '' THEN rec."birthDate"::DATE ELSE NULL END,
+                    "birthCity" = rec.birthCity,
+                    "birthStateProvince" = rec.birthStateProvince,
+                    "birthCountry" = rec."birthCountry",
+                    "shootsCatches" = rec."shootsCatches",
+                    "playerSlug" = rec."playerSlug",
+                    "inTop100AllTime" = (rec."inTop100AllTime" = 1),
+                    "inHHOF" = (rec."inHHOF" = 1),
+                    "draftYear" = rec.draftYear::INTEGER,
+                    "draftTeamAbbrev" = rec.draftTeamAbbrev,
+                    "draftRound" = rec.draftRound::INTEGER,
+                    "draftPickInRound" = rec.draftPickInRound::INTEGER,
+                    "draftOverallPick" = rec.draftOverallPick::INTEGER,
+                    data_hash = new_hash,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = matching_record.id;
+
+                updated_count := updated_count + 1;
             END IF;
-        END LOOP;
-        
-        -- If no matching hash was found, we need to insert
+        END IF;
+
+        -- New player: insert their row.
         IF NOT found_match THEN
             -- Get the next occurrence number for this player
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
@@ -264,7 +298,7 @@ BEGIN
         rows_processed := rows_processed + 1;
     END LOOP;
     
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
     
     -- Log the results

@@ -43,11 +43,11 @@ CREATE TABLE IF NOT EXISTS newapi.current_rosters (
     UNIQUE("playerId", "teamAbbreviation", occurrence_number)
 );
 
--- Create indexes for better performance
-CREATE INDEX IF NOT EXISTS idx_rosters_player_id ON newapi.current_rosters("playerId");
+-- Create indexes for better performance.
+-- No separate ("playerId") or occurrence index: the UNIQUE key above starts
+-- with "playerId" and covers both.
 CREATE INDEX IF NOT EXISTS idx_rosters_team ON newapi.current_rosters("teamAbbreviation");
 CREATE INDEX IF NOT EXISTS idx_rosters_active ON newapi.current_rosters(active);
-CREATE INDEX IF NOT EXISTS idx_rosters_occurrence ON newapi.current_rosters("playerId", "teamAbbreviation", occurrence_number);
 CREATE INDEX IF NOT EXISTS idx_rosters_position ON newapi.current_rosters("positionGroup", "positionCode");
 
 -- Create a table to store ETL run statistics
@@ -138,18 +138,17 @@ DECLARE
     duration INTERVAL;
     staging_player_ids BIGINT[];
 BEGIN
-    start_time := CURRENT_TIMESTAMP;
+    start_time := clock_timestamp();
     
     -- Collect all player IDs from the current staging batch
     SELECT ARRAY_AGG(DISTINCT "playerId") INTO staging_player_ids
     FROM staging1.current_rosters;
     
-    -- First, mark all existing records as inactive
-    -- They will be reactivated if they appear in the current staging batch
-    UPDATE newapi.current_rosters 
-    SET active = FALSE, updated_at = CURRENT_TIMESTAMP
-    WHERE active = TRUE;
-    
+    -- One row per player/team, updated in place. active = on that team's
+    -- roster now; a player's row for a former team stays as the record of
+    -- that stint, inactive. Rows are only written when something changed
+    -- (this used to deactivate every row, then reactivate each one).
+
     -- Loop through each record in staging
     FOR rec IN 
         SELECT 
@@ -171,29 +170,52 @@ BEGIN
             rec."birthCity", rec."birthCountry", rec."birthStateProvince"
         );
         
-        found_match := FALSE;
-        
-        -- Check all existing records for this player/team combination
-        FOR matching_record IN
-            SELECT * FROM newapi.current_rosters 
-            WHERE "playerId" = rec."playerId" 
-            AND "teamAbbreviation" = rec."teamAbbreviation"
-            ORDER BY occurrence_number
-        LOOP
-            -- Check if this record has the same data (hash match)
-            IF matching_record.data_hash = new_hash THEN
-                -- Data hasn't changed - reactivate and update timestamp
-                UPDATE newapi.current_rosters 
-                SET active = TRUE, updated_at = CURRENT_TIMESTAMP
+        -- The row for this player/team. Before the 2026-11-26 migration
+        -- there could be several; the active or most recent one is current.
+        SELECT * INTO matching_record FROM newapi.current_rosters
+        WHERE "playerId" = rec."playerId"
+        AND "teamAbbreviation" = rec."teamAbbreviation"
+        ORDER BY active DESC NULLS LAST, updated_at DESC NULLS LAST, occurrence_number DESC
+        LIMIT 1;
+        found_match := FOUND;
+
+        IF found_match THEN
+            IF matching_record.data_hash IS NOT DISTINCT FROM new_hash THEN
+                IF matching_record.active THEN
+                    unchanged_count := unchanged_count + 1;
+                ELSE
+                    -- Back on this team's roster.
+                    UPDATE newapi.current_rosters
+                    SET active = TRUE, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = matching_record.id;
+                    updated_count := updated_count + 1;
+                END IF;
+            ELSE
+                UPDATE newapi.current_rosters SET
+                    "positionGroup" = rec."positionGroup",
+                    headshot = rec.headshot,
+                    "firstName" = rec."firstName",
+                    "lastName" = rec."lastName",
+                    "sweaterNumber" = rec."sweaterNumber"::DOUBLE PRECISION,
+                    "positionCode" = rec."positionCode",
+                    "shootsCatches" = rec."shootsCatches",
+                    "heightInInches" = rec."heightInInches",
+                    "weightInPounds" = rec."weightInPounds",
+                    "heightInCentimeters" = rec."heightInCentimeters",
+                    "weightInKilograms" = rec."weightInKilograms",
+                    "birthDate" = rec."birthDate",
+                    "birthCity" = rec."birthCity",
+                    "birthCountry" = rec."birthCountry",
+                    "birthStateProvince" = rec."birthStateProvince",
+                    active = TRUE,
+                    data_hash = new_hash,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = matching_record.id;
-                
-                unchanged_count := unchanged_count + 1;
-                found_match := TRUE;
-                EXIT; -- Break out of the loop
+                updated_count := updated_count + 1;
             END IF;
-        END LOOP;
-        
-        -- If no matching hash was found, we need to insert a new record
+        END IF;
+
+        -- First time on this team: insert a row.
         IF NOT found_match THEN
             -- Get the next occurrence number for this combination
             SELECT COALESCE(MAX(occurrence_number), 0) + 1 INTO next_occurrence
@@ -228,12 +250,20 @@ BEGIN
         rows_processed := rows_processed + 1;
     END LOOP;
     
-    -- Count how many records remain inactive (no longer in staging)
-    SELECT COUNT(*) INTO deactivated_count
-    FROM newapi.current_rosters
-    WHERE active = FALSE;
+    -- Players no longer on a team's roster: deactivate that row. Staging is
+    -- always a full league roster (run_etl pads teams it didn't scrape).
+    UPDATE newapi.current_rosters r
+    SET active = FALSE, updated_at = CURRENT_TIMESTAMP
+    WHERE r.active = TRUE
+      AND NOT EXISTS (
+          SELECT 1 FROM staging1.current_rosters s
+          WHERE s."playerId" = r."playerId"
+            AND s."teamAbbreviation" = r."teamAbbreviation"
+      );
+    -- Now the number deactivated by this run, not the running total.
+    GET DIAGNOSTICS deactivated_count = ROW_COUNT;
     
-    end_time := CURRENT_TIMESTAMP;
+    end_time := clock_timestamp();
     duration := end_time - start_time;
     
     -- Log the results

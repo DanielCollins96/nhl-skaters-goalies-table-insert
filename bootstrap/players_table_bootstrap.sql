@@ -73,8 +73,6 @@ CREATE TABLE newapi.players (
 );
 
 -- Create indexes for better performance
-CREATE INDEX idx_players_player_id ON newapi.players("playerId");
 CREATE INDEX idx_players_current_team ON newapi.players("currentTeamAbbrev");
-CREATE INDEX idx_players_occurrence ON newapi.players("playerId", occurrence_number);
 
 COMMIT;
