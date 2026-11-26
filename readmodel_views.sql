@@ -539,7 +539,7 @@ WITH skater_totals AS (
         SUM(s."gamesPlayed") AS "gamesPlayed",
         SUM(s.assists) AS assists,
         SUM(s.points) AS points,
-        (ARRAY_AGG(s."teamName.default" ORDER BY s."gamesPlayed" DESC))[1] AS "teamName"
+        (ARRAY_AGG(s."teamName.default" ORDER BY s."gamesPlayed" DESC NULLS LAST, s.sequence DESC))[1] AS "teamName"
     FROM newapi.season_skater s
     WHERE s."leagueAbbrev" = 'NHL'
       AND s.is_active = true
@@ -554,7 +554,7 @@ goalie_totals AS (
         SUM(g.goals) AS goals,
         SUM(g."gamesPlayed") AS "gamesPlayed",
         SUM(g.assists) AS assists,
-        (ARRAY_AGG(g."teamName.default" ORDER BY g."gamesPlayed" DESC))[1] AS "teamName"
+        (ARRAY_AGG(g."teamName.default" ORDER BY g."gamesPlayed" DESC NULLS LAST, g.sequence DESC))[1] AS "teamName"
     FROM newapi.season_goalie g
     WHERE g."leagueAbbrev" = 'NHL'
       AND g.is_active = true
@@ -583,7 +583,11 @@ leader_rows AS (
             PARTITION BY c.season, c."gameTypeId"
             ORDER BY
                 c.points DESC NULLS LAST,
-                c.goals DESC NULLS LAST
+                c.goals DESC NULLS LAST,
+                -- Ties: fewer games ranks higher, then a fixed order, so the
+                -- top-200 cut is the same every time.
+                c."gamesPlayed" ASC NULLS LAST,
+                c."playerId"
         ) AS row_number,
         CONCAT(p."firstName", ' ', p."lastName") AS player_name,
         p."playerId",
@@ -637,7 +641,7 @@ WITH goalie_totals AS (
         SUM(g."goalsAgainstAvg" * g."gamesPlayed") / NULLIF(SUM(g."gamesPlayed"), 0) AS "goalsAgainstAvg",
         SUM(g."savePctg" * g."gamesPlayed") / NULLIF(SUM(g."gamesPlayed"), 0) AS "savePctg",
         SUM(g.shutouts) AS shutouts,
-        (ARRAY_AGG(g."teamName.default" ORDER BY g."gamesPlayed" DESC))[1] AS "teamName"
+        (ARRAY_AGG(g."teamName.default" ORDER BY g."gamesPlayed" DESC NULLS LAST, g.sequence DESC))[1] AS "teamName"
     FROM newapi.season_goalie g
     WHERE g."leagueAbbrev" = 'NHL'
       AND g.is_active = true
@@ -648,7 +652,7 @@ leader_rows AS (
     SELECT
         ROW_NUMBER() OVER (
             PARTITION BY g.season, g."gameTypeId"
-            ORDER BY g.wins DESC NULLS LAST, g."savePctg" DESC NULLS LAST
+            ORDER BY g.wins DESC NULLS LAST, g."savePctg" DESC NULLS LAST, g."playerId"
         ) AS row_number,
         CONCAT(p."firstName", ' ', p."lastName") AS player_name,
         p."playerId",
